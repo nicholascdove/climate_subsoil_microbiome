@@ -1,0 +1,2209 @@
+---
+title: "Untitled"
+output: html_document
+---
+# Set up
+```{r, warning=F, message=F, cache=F, results= F}
+library(ape)
+library(biomformat)
+library(Biostrings)
+library(cowplot)
+library(dplyr)
+library(DESeq2)
+library(ggplot2)
+library(Hmisc)
+library(knitr)
+library(phyloseq)
+library(readxl)
+library(stringr)
+library(vegan)
+library(viridis)
+library(tidyr)
+library(breakaway)
+library(yaml)
+library(mixOmics)
+library(microbiome)
+library(metagMisc)
+library(plotbiomes)
+library(ggmap) #devtools::install_github("dkahle/ggmap")
+library(sp)
+library(ggsn)
+library(mapdata)
+library(ANCOMBC)
+
+source("~/Desktop/MicrobiomeScripts/qza_to_phyloseq.R")
+#source("~/Desktop/MicrobiomeScripts/Scripts/SourceTracker.R")
+source("~/Desktop/MicrobiomeScripts/random_functions.R")
+
+theme_set(theme_cowplot())
+
+#For Powerpoint
+theme_update(axis.title = element_text(size = 28), axis.text = element_text(size = 24), 
+             legend.text = element_text(size = 24), title = element_text(size = 28))
+
+#For manuscript
+theme_update(axis.title = element_text(size = 12), axis.text = element_text(size = 10), 
+             legend.title = element_blank(), legend.text = element_text(size = 12), 
+             title = element_text(size = 12))
+```
+
+# Download data
+```{r, warning=F, message=F, cache=F, results= F}
+data_16S <- qza_to_phyloseq_ITS(features = "~/Dropbox/DeepSoil_Microbial/qiime/table-16S.qza", 
+                                taxonomy = "~/Dropbox/DeepSoil_Microbial/qiime/taxonomy-16S.qza")
+mapping <- read_excel("~/Dropbox/DeepSoil_Microbial/mapping.xlsx")
+metadata <- read.csv("~/Dropbox/DeepSoil_Microbial/MASTER_METADATA.csv")
+chemistry <- read_excel("~/Dropbox/DeepSoil_Microbial/CZO.WM.Chemistry.xlsx")
+metadata <- merge(mapping, metadata, by = "Full.ID")
+metadata <- merge(metadata, chemistry, by = "Full.ID")
+
+sampledata_16S <- sample_data(metadata) #import into phyloseq sample data object
+sample_names(sampledata_16S) <- sampledata_16S$ID_16S # make sure names are the same as the OTU tables
+data_16S <- merge_phyloseq(data_16S, sampledata_16S)
+
+data_16S <- subset_samples(data_16S, colSums(data_16S@otu_table) > 1000) # keep samples that have at least 1000 reads
+data_16S <- prune_taxa(taxa_sums(data_16S) > 1, data_16S) # delete singletons
+
+# Apply normalizations
+data_16S_offset <- data_16S
+otu_table(data_16S_offset) <- otu_table(data_16S_offset) +1
+data_16S_clr <- microbiome::transform(data_16S_offset, "clr") # Center-log ratio
+data_16S_tss <- transform_sample_counts(data_16S, function(x) x/sum(x)) # total sum scaling (proportions)
+#data_16S_1000 <- phyloseq_mult_raref_avg(data_16S, SampSize = 1000, parallel = T)
+#otu_table(data_16S_1000) <- round(otu_table(data_16S_1000)*1000) # rarefied to 1000 reads
+
+# ITS --------------------------------------------------------------
+data_ITS <- qza_to_phyloseq_ITS(features = "~/Dropbox/DeepSoil_Microbial/qiime/table-ITS.qza", 
+                                taxonomy = "~/Dropbox/DeepSoil_Microbial/qiime/taxonomy-ITS.qza")
+
+sampledata_ITS <- sample_data(metadata) #import into phyloseq sample data object
+sample_names(sampledata_ITS) <- sampledata_ITS$ID_ITS # make sure names are the same as the OTU tables
+data_ITS <- merge_phyloseq(data_ITS, sampledata_ITS)
+
+#non reads to remove for contamination
+data_ITS <- subset_taxa(data_ITS, Kingdom == "k__Fungi")
+data_ITS <- prune_taxa(taxa_sums(data_ITS) > 1, data_ITS) # delete singletons
+data_ITS <- subset_samples(data_ITS, colSums(data_ITS@otu_table) > 1000)
+
+# Apply normalizations
+data_ITS_offset <- data_ITS
+otu_table(data_ITS_offset) <- otu_table(data_ITS_offset) +1
+data_ITS_clr <- microbiome::transform(data_ITS_offset, "clr") # Center-log ratio
+data_ITS_tss <- transform_sample_counts(data_ITS, function(x) x/sum(x)) # total sum scaling (proportions)
+#data_ITS_1000 <- phyloseq_mult_raref_avg(data_ITS, SampSize = 1000, parallel = T)
+#otu_table(data_ITS_1000) <- round(otu_table(data_ITS_1000)*1000) # rarefied to 1000 reads
+```
+
+# Beta Div overall (Figure 1)
+```{r}
+df_16S <- data.frame(sample_data(data_16S_tss))
+dist_16S <- phyloseq::distance(subset_samples(data_16S_tss, Depth > 0), "bray")
+set.seed(12290)
+ad_16S_overall <- adonis(dist_16S ~ Site*Depth, data = df_16S %>% filter(Depth > 0), permutations = 999) 
+ad_16S_overall
+
+df_ITS <- data.frame(sample_data(data_ITS_tss))
+dist_ITS <- phyloseq::distance(subset_samples(data_ITS_tss, Depth > 0), "bray")
+set.seed(12290)
+ad_ITS_overall <- adonis(dist_16S ~ Site*Depth, data = df_16S %>% filter(Depth > 0), permutations = 999) 
+ad_ITS_overall
+
+
+data_16S_tss@sam_data$Site <- dplyr::recode(data_16S_tss@sam_data$Site, SJE = "SJER", PR = "PROV")
+data_16S_tss@sam_data$Site <- ordered(data_16S_tss@sam_data$Site, 
+                                  c("SJER", "SPR", "PROV", "SH","GR2", "GR3", "GR5", "BAR"))
+set.seed(01221990)
+ordu_16S <- ordinate(data_16S_tss, "PCoA", "bray", weighted = T)
+vectors_16S <- data.frame(sample_data(data_16S_tss)) %>% 
+  dplyr::select(MAP, MAT, pH.CaCl2, C.mmol.kgsoil, N.mmol.kgsoil) %>%
+  mutate(pH = pH.CaCl2, `C:N` = C.mmol.kgsoil/N.mmol.kgsoil) %>%
+  dplyr::select(-pH.CaCl2, -C.mmol.kgsoil, -N.mmol.kgsoil)
+vectors_16S$`C:N`[vectors_16S$`C:N` == Inf] <- NA
+en_16S <- envfit(ordu_16S$vectors, vectors_16S, permutations = 999, na.rm = TRUE)
+plot(ordu_16S$vectors)
+plot(en_16S)
+en_coord_cont_16S <- as.data.frame(scores(en_16S, "vectors")) * ordiArrowMul(en_16S)
+p <- plot_ordination(data_16S_tss, ordu_16S)
+p_16S_pcoa_all <- ggplot(p$data, p$mapping) +
+  geom_point(aes(shape = Horizon, fill = Site), color = "black", size = 2, alpha = 0.75) +
+  scale_shape_manual(values = c(21,22,23)) +
+  scale_fill_brewer(type = "qual", guide = F) +
+  labs(shape = "Horizon", col = "Site") +
+  geom_segment(data = en_coord_cont_16S, aes(x = 0, y = 0, xend = Axis.1, yend = Axis.2), 
+               color = "black", arrow = arrow(length = unit(0.15, "in"))) +
+  geom_label_repel(data = en_coord_cont_16S, aes(label = row.names(en_coord_cont_16S), x = Axis.1, y = Axis.2), alpha = 0.75, col = "black") +
+  scale_x_continuous(name = paste0(paste0("PCoA 1 (", round(100*as.data.frame(ordu_16S$values)[1,2], 1)), "%)")) +
+  scale_y_continuous(name = paste0(paste0("PCoA 2 (", round(100*as.data.frame(ordu_16S$values)[2,2], 1)), "%)")) +
+  theme(legend.position = c(0.75, 0.4), legend.title = element_text(size = 12), legend.justification = c(0,1)) +
+  guides(shape = guide_legend(override.aes = list(size = 4))) 
+
+data_ITS_tss@sam_data$Site <- dplyr::recode(data_ITS_tss@sam_data$Site, SJE = "SJER", PR = "PROV")
+data_ITS_tss@sam_data$Site <- ordered(data_ITS_tss@sam_data$Site, 
+                                  c("SJER", "SPR", "PROV", "SH","GR2", "GR3", "GR5", "BAR"))
+set.seed(01221990)
+ordu_ITS <- ordinate(data_ITS_tss, "PCoA", "bray", weighted = T)
+vectors_ITS <- data.frame(sample_data(data_ITS_tss)) %>% 
+  dplyr::select(MAP, MAT, pH.CaCl2, C.mmol.kgsoil, N.mmol.kgsoil) %>%
+  mutate(pH = pH.CaCl2, `C:N` = C.mmol.kgsoil/N.mmol.kgsoil) %>%
+  dplyr::select(-pH.CaCl2, -C.mmol.kgsoil, -N.mmol.kgsoil)
+vectors_ITS$`C:N`[vectors_ITS$`C:N` == Inf] <- NA
+en_ITS <- envfit(ordu_ITS$vectors, vectors_ITS, permutations = 999, na.rm = TRUE)
+plot(ordu_ITS$vectors)
+plot(en_ITS)
+en_coord_cont_ITS <- as.data.frame(scores(en_ITS, "vectors")) * ordiArrowMul(en_ITS)
+p <- plot_ordination(data_ITS_tss, ordu_ITS)
+p_ITS_pcoa_all <- ggplot(p$data, p$mapping) +
+  geom_point(aes(shape = Horizon, fill = Site), color = "black", size = 2, alpha = 0.75) +
+  scale_shape_manual(values = c(21,22,23), guide = F) +
+  scale_fill_brewer(type = "qual", palette = "Accent") +
+  labs(shape = "Horizon", col = "Site") +
+  geom_segment(data = en_coord_cont_ITS, aes(x = 0, y = 0, xend = Axis.1, yend = Axis.2), 
+               color = "black", arrow = arrow(length = unit(0.15, "in"))) +
+  geom_label_repel(data = en_coord_cont_ITS, aes(label = row.names(en_coord_cont_ITS), x = Axis.1, y = Axis.2), alpha = 0.75, col = "black") +
+  scale_x_continuous(name = paste0(paste0("PCoA 1 (", round(100*as.data.frame(ordu_ITS$values)[1,2], 1)), "%)")) +
+  scale_y_continuous(name = paste0(paste0("PCoA 2 (", round(100*as.data.frame(ordu_ITS$values)[2,2], 1)), "%)")) +
+  guides(fill = guide_legend(override.aes = list(pch = 21, size = 4))) 
+
+prow <- plot_grid(p_16S_pcoa_all, 
+                  p_ITS_pcoa_all + theme(legend.position = "none"),
+                  align = "vh", labels = c("B", "C"), ncol = 2)
+leg <- get_legend(p_ITS_pcoa_all + theme(legend.position = "bottom", legend.justification = "center"))
+prow2 <- plot_grid(leg, prow, ncol = 1, rel_heights = c(0.1, 1)) # 7 x 4 in
+
+site_data <- read_excel("~/Dropbox/DeepSoil_Microbial/Site_data.xlsx")
+site_data$Site <- ordered(site_data$Site, c("SJER", "SPR", "PROV", "SH","GR2", "GR3", "GR5", "BAR"))
+site_data$latitude <- as.numeric(site_data$latitude)
+site_data$longitude <- as.numeric(site_data$longitude)
+biomes <- whittaker_base_plot() +
+  geom_point(data = site_data, aes(x = temperature, y = precipitation), color = "white", alpha = 0.5, size = 4) +
+  geom_point(data = site_data, aes(x = temperature, y = precipitation, color = Site), inherit.aes = F, size = 3) +
+  scale_color_brewer(type = "qual", guide = "none") +
+  theme(legend.position = c(0.01,1), legend.text = element_text(size = 8), legend.justification = c(0,1), 
+        legend.background = element_rect(fill = scales::alpha("white", 0.5))) # 3 x 4
+
+ggmap::register_google(key = "AIzaSyAeKBZme1g5QjFYtwa3uIWSpjoyK53zrM0")
+sbbox <- make_bbox(lon = site_data$longitude, lat = site_data$latitude, f = 1)
+sq_map <- get_map(location = sbbox, maptype = "satellite", source = "google")
+mymap <- ggmap(sq_map) + 
+  scale_y_continuous(name = "Latitude") +
+  scale_x_continuous(name = "Longitude") + 
+  geom_point(data = site_data, mapping = aes(x = longitude, y = latitude, fill = Site), size = 3, col = "black", pch = 21) +
+  scale_fill_brewer(type = "qual", guide = "none") +
+  coord_fixed(xlim = c(min(site_data$longitude) - 0.03, max(site_data$longitude) + 0.03), 
+              ylim = c(min(site_data$latitude) - 0.03, max(site_data$latitude) + 0.03), ratio = 1.3) 
+
+states <- map_data("state")
+Cali <- subset(states, region %in% c("california"))
+counties <- map_data("county")
+ca_county <- subset(counties, region == "california")  
+
+inset_map <- ggplot(Cali, mapping = aes(x = long, y = lat)) + 
+  coord_fixed(1.3) + 
+  geom_polygon(data = Cali, aes(x = long, y = lat, group = group), 
+               color = "black", fill = "gray") +
+  geom_polygon(data = ca_county, aes(x = long, y = lat, group = group), 
+               fill = NA, color = "white") +
+  geom_polygon(data = Cali, aes(x = long, y = lat, group = group),
+               color = "black", fill = NA) + 
+  geom_rect(xmin = min(site_data$longitude), xmax = max(site_data$longitude), 
+            ymin = min(site_data$latitude), ymax = max(site_data$latitude),
+            fill = NA, col = "red", size = 1) +
+  theme_void() + theme(panel.background = element_rect("white"))
+
+mymap2 <- ggdraw(mymap + theme_half_open(12)) +
+  draw_plot(inset_map, x = 1.1, y = 0.21, height = 0.5, width = 0.5, hjust = 1)
+
+
+elevation_plot <- ggplot(site_data, aes(x = Site, y = elevation, fill = Site)) +
+  geom_bar(stat = "identity") +
+  scale_fill_brewer(type = "qual", guide = "none") +
+  scale_x_discrete(name = NULL, breaks = NULL) +
+  scale_y_continuous(name = "Elevation\n(m)") +
+  theme(axis.title.y = element_text(angle = 0, vjust = 0.5))
+
+p1 <- plot_grid(elevation_plot, mymap2, ncol = 1, rel_heights = c(1,3))
+p2 <- plot_grid(p1, biomes, rel_widths = c(5,3), ncol = 2)
+p3 <- plot_grid(p2, prow2, ncol = 1, rel_heights = c(3.5,4), labels = c("A", "")) 
+
+p4 <- ggdraw(p3) + 
+  draw_line(x = c(0.2, 0.37), y = c(0.891, 0.891)) + 
+  draw_line(x = c(0.43, 0.6), y = c(0.891, 0.891)) +
+  draw_label("CZO", x = 0.285, y = 0.88) +
+  draw_label("WMC", x = 0.515, y = 0.88) 
+
+ggsave("~/Dropbox/DeepSoil_Microbial/Fig_1.pdf", dpi = 600, height = 7.25, width = 7, units = "in")
+p4
+dev.off()
+```
+
+# Bet diversity
+```{r}
+df_16S <- data.frame(sample_data(data_16S_tss))
+dist_16S <- phyloseq::distance(subset_samples(data_16S_tss, Depth > 0), "bray")
+
+set.seed(12290)
+mod <- betadisper(d = dist_16S, group = df_16S$Horizon) 
+anova(mod)
+
+df_ITS <- data.frame(sample_data(data_ITS_tss))
+dist_ITS <- phyloseq::distance(subset_samples(data_ITS_tss, Depth > 0), "bray")
+
+set.seed(12290)
+mod <- betadisper(d = dist_ITS, group = df_ITS$Horizon) 
+anova(mod)
+```
+
+
+# Horizon vs. Depth Question (Table 1)
+```{r} 
+# 16S ----------------------------------------------
+df_16S <- data.frame(sample_data(data_16S_tss))
+dist_16S <- phyloseq::distance(subset_samples(data_16S_tss, Depth > 0), "bray")
+
+set.seed(12290)
+mod <- betadisper(d = dist_16S, group = df_16S$Horizon) 
+anova(mod)
+
+meandist(dist = dist_16S, grouping = df_16S$Horizon)
+
+set.seed(12290)
+ad_16S_overall_d <- adonis(dist_16S ~ Site*Depth, data = df_16S %>% filter(Depth > 0), permutations = 999) 
+ad_16S_overall_d
+
+set.seed(12290)
+ad_16S_overall_h <- adonis(dist_16S ~ Site*Horizon, data = df_16S %>% filter(Depth > 0), permutations = 999) 
+ad_16S_overall_h
+
+set.seed(12290)
+ad_16S_overall_h_c <- adonis(dist_16S ~ Site*as.numeric(as.factor(Horizon)), data = df_16S %>% filter(Depth > 0), permutations = 999) 
+ad_16S_overall_h_c
+
+tab.h <- data.frame(matrix(ncol = 3, nrow = 0))
+x <- data.frame(matrix(ncol = 3))
+colnames(x) <- c("name", "R^2.horizon", "p-val.horizon")
+for(i in levels(as.factor(data_16S_tss@sam_data$Site))){
+  sub <- subset_samples(data_16S_tss, Site %in% i) #subset by compartment
+  samp <- data.frame(sub@sam_data) # create sample data matrix
+  dist <- phyloseq::distance(sub, "bray") # create distance matrix
+  set.seed(12290)
+  ad <- adonis(dist ~ Horizon, data = samp, permutations = 999) # run permanova
+  x$name <- i # this and below populate the matrix named "x"
+  x$`p-val.horizon` <- p.adjust(ad$aov.tab[1,6], method = "bonferroni", n = 8)
+  x$`R^2.horizon` <- round(ad$aov.tab[1,5], 3)
+  tab.h <- rbind(tab.h, x) #concatenate "x" with "tab"
+}
+
+tab.h.c <- data.frame(matrix(ncol = 3, nrow = 0))
+x <- data.frame(matrix(ncol = 3))
+colnames(x) <- c("name", "R^2.horizon.c", "p-val.horizon.c")
+for(i in levels(as.factor(data_16S_tss@sam_data$Site))){
+  sub <- subset_samples(data_16S_tss, Site %in% i) #subset by compartment
+  samp <- data.frame(sub@sam_data) # create sample data matrix
+  dist <- phyloseq::distance(sub, "bray") # create distance matrix
+  set.seed(12290)
+  ad <- adonis(dist ~ as.numeric(as.factor(Horizon)), data = samp, permutations = 999) # run permanova
+  x$name <- i # this and below populate the matrix named "x"
+  x$`p-val.horizon.c` <- p.adjust(ad$aov.tab[1,6], method = "bonferroni", n = 8)
+  x$`R^2.horizon.c` <- round(ad$aov.tab[1,5], 3)
+  tab.h.c <- rbind(tab.h.c, x) #concatenate "x" with "tab"
+}
+
+tab.d <- data.frame(matrix(ncol = 3, nrow = 0))
+x <- data.frame(matrix(ncol = 3))
+colnames(x) <- c("name", "R^2.depth", "p-val.depth")
+for(i in levels(as.factor(data_16S_tss@sam_data$Site))){
+  sub <- subset_samples(data_16S_tss, Site %in% i) #subset by compartment
+  sub <- subset_samples(sub, Depth > 0)
+  samp <- data.frame(sub@sam_data) # create sample data matrix
+  dist <- phyloseq::distance(sub, "bray") # create distance matrix
+  set.seed(12290)
+  ad <- adonis(dist ~ Depth, data = samp, permutations = 999) # run permanova
+  x$name <- i # this and below populate the matrix named "x"
+  x$`p-val.depth` <- p.adjust(ad$aov.tab[1,6], method = "bonferroni", n = 8)
+  x$`R^2.depth` <- round(ad$aov.tab[1,5], 3)
+  tab.d <- rbind(tab.d, x) #concatenate "x" with "tab"
+}
+tables_16S <- merge(tab.h, tab.d, by = "name")
+tables_16S <- merge(tables_16S, tab.h.c, by = "name")
+
+
+
+SSCZO <- subset_samples(data_16S_tss, Climosequence == "SSCZO")
+WMC <- subset_samples(data_16S_tss, Climosequence == "WMC")
+
+df_16S <- data.frame(sample_data(SSCZO))
+dist_16S <- phyloseq::distance(subset_samples(SSCZO, Depth > 0), "bray")
+
+set.seed(12290)
+ad_16S_CZO_d <- adonis(dist_16S ~ Site*Depth, data = df_16S %>% filter(Depth > 0), permutations = 999) 
+ad_16S_CZO_d
+
+set.seed(12290)
+ad_16S_CZO_h <- adonis(dist_16S ~ Site*Horizon, data = df_16S %>% filter(Depth > 0), permutations = 999) 
+ad_16S_CZO_h
+
+
+df_16S <- data.frame(sample_data(WMC))
+dist_16S <- phyloseq::distance(subset_samples(WMC, Depth > 0), "bray")
+
+set.seed(12290)
+ad_16S_WMC_d <- adonis(dist_16S ~ Site*Depth, data = df_16S %>% filter(Depth > 0), permutations = 999) 
+ad_16S_WMC_d
+
+set.seed(12290)
+ad_16S_WMC_h <- adonis(dist_16S ~ Site*Horizon, data = df_16S %>% filter(Depth > 0), permutations = 999) 
+ad_16S_WMC_h
+
+
+# ITS --------------------------------------------------------------
+
+df_ITS <- data.frame(sample_data(data_ITS_tss))
+dist_ITS <- phyloseq::distance(subset_samples(data_ITS_tss, Depth > 0), "bray")
+
+set.seed(12290)
+mod <- betadisper(d = dist_ITS, group = df_ITS$Horizon) 
+anova(mod)
+
+meandist(dist = dist_ITS, grouping = df_ITS$Horizon)
+
+set.seed(12290)
+ad_ITS_overall_d <- adonis(dist_ITS ~ Site*Depth, data = df_ITS %>% filter(Depth > 0), permutations = 999) 
+ad_ITS_overall_d
+
+set.seed(12290)
+ad_ITS_overall_h <- adonis(dist_ITS ~ Site*Horizon, data = df_ITS %>% filter(Depth > 0), permutations = 999) 
+ad_ITS_overall_h
+
+tab.h <- data.frame(matrix(ncol = 3, nrow = 0))
+x <- data.frame(matrix(ncol = 3))
+colnames(x) <- c("name", "R^2.horizon", "p-val.horizon")
+for(i in levels(as.factor(data_ITS_tss@sam_data$Site))){
+  sub <- subset_samples(data_ITS_tss, Site %in% i) #subset by compartment
+  samp <- data.frame(sub@sam_data) # create sample data matrix
+  dist <- phyloseq::distance(sub, "bray") # create distance matrix
+  set.seed(12290)
+  ad <- adonis(dist ~ Horizon, data = samp, permutations = 999) # run permanova
+  x$name <- i # this and below populate the matrix named "x"
+  x$`p-val.horizon` <- p.adjust(ad$aov.tab[1,6], method = "bonferroni", n = 8)
+  x$`R^2.horizon` <- round(ad$aov.tab[1,5], 3)
+  tab.h <- rbind(tab.h, x) #concatenate "x" with "tab"
+}
+
+tab.h.c <- data.frame(matrix(ncol = 3, nrow = 0))
+x <- data.frame(matrix(ncol = 3))
+colnames(x) <- c("name", "R^2.horizon.c", "p-val.horizon.c")
+for(i in levels(as.factor(data_ITS_tss@sam_data$Site))){
+  sub <- subset_samples(data_ITS_tss, Site %in% i) #subset by compartment
+  samp <- data.frame(sub@sam_data) # create sample data matrix
+  dist <- phyloseq::distance(sub, "bray") # create distance matrix
+  set.seed(12290)
+  ad <- adonis(dist ~ as.numeric(as.factor(Horizon)), data = samp, permutations = 999) # run permanova
+  x$name <- i # this and below populate the matrix named "x"
+  x$`p-val.horizon.c` <- p.adjust(ad$aov.tab[1,6], method = "bonferroni", n = 8)
+  x$`R^2.horizon.c` <- round(ad$aov.tab[1,5], 3)
+  tab.h.c <- rbind(tab.h.c, x) #concatenate "x" with "tab"
+}
+
+tab.d <- data.frame(matrix(ncol = 3, nrow = 0))
+x <- data.frame(matrix(ncol = 3))
+colnames(x) <- c("name", "R^2.depth", "p-val.depth")
+for(i in levels(as.factor(data_ITS_tss@sam_data$Site))){
+  sub <- subset_samples(data_ITS_tss, Site %in% i) #subset by compartment
+  sub <- subset_samples(sub, Depth > 0)
+  samp <- data.frame(sub@sam_data) # create sample data matrix
+  dist <- phyloseq::distance(sub, "bray") # create distance matrix
+  set.seed(12290)
+  ad <- adonis(dist ~ Depth, data = samp, permutations = 999) # run permanova
+  x$name <- i # this and below populate the matrix named "x"
+  x$`p-val.depth` <- p.adjust(ad$aov.tab[1,6], method = "bonferroni", n = 8)
+  x$`R^2.depth` <- round(ad$aov.tab[1,5], 3)
+  tab.d <- rbind(tab.d, x) #concatenate "x" with "tab"
+}
+tables_ITS <- merge(tab.h, tab.d, by = "name")
+
+tables_ITS <- merge(tables_ITS, tab.h.c, by = "name")
+
+SSCZO <- subset_samples(data_ITS_tss, Climosequence == "SSCZO")
+WMC <- subset_samples(data_ITS_tss, Climosequence == "WMC")
+
+df_ITS <- data.frame(sample_data(SSCZO))
+dist_ITS <- phyloseq::distance(subset_samples(SSCZO, Depth > 0), "bray")
+
+set.seed(12290)
+ad_ITS_CZO_d <- adonis(dist_ITS ~ Site*Depth, data = df_ITS %>% filter(Depth > 0), permutations = 999) 
+ad_ITS_CZO_d
+
+set.seed(12290)
+ad_ITS_CZO_h <- adonis(dist_ITS ~ Site*Horizon, data = df_ITS %>% filter(Depth > 0), permutations = 999) 
+ad_ITS_CZO_h
+
+df_ITS <- data.frame(sample_data(WMC))
+dist_ITS <- phyloseq::distance(subset_samples(WMC, Depth > 0), "bray")
+
+set.seed(12290)
+ad_ITS_WMC_d <- adonis(dist_ITS ~ Site*Depth, data = df_ITS %>% filter(Depth > 0), permutations = 999) 
+ad_ITS_WMC_d
+
+set.seed(12290)
+ad_ITS_WMC_h <- adonis(dist_ITS ~ Site*Horizon, data = df_ITS %>% filter(Depth > 0), permutations = 999) 
+ad_ITS_WMC_h
+
+# Combine tables into Table 1 ------------------------------------------------
+tables_16S$Amplicon <- "16S"
+tables_ITS$Amplicon <- "ITS"
+
+overall_16S <- c("overall", round(ad_16S_overall_h$aov.tab[2,5], 3), ad_16S_overall_h$aov.tab[2,6], round(ad_16S_overall_d$aov.tab[2,5], 3), ad_16S_overall_d$aov.tab[2,6], "16S")
+overall_ITS <- c("overall", round(ad_ITS_overall_h$aov.tab[2,5], 3), ad_ITS_overall_h$aov.tab[2,6], round(ad_ITS_overall_d$aov.tab[2,5], 3), ad_ITS_overall_d$aov.tab[2,6], "ITS")
+CZO_16S <- c("CZO", round(ad_16S_CZO_h$aov.tab[2,5], 3), ad_16S_CZO_h$aov.tab[2,6], round(ad_16S_CZO_d$aov.tab[2,5], 3), ad_16S_CZO_d$aov.tab[2,6], "16S")
+CZO_ITS <- c("CZO", round(ad_ITS_CZO_h$aov.tab[2,5], 3), ad_ITS_CZO_h$aov.tab[2,6], round(ad_ITS_CZO_d$aov.tab[2,5], 3), ad_ITS_CZO_d$aov.tab[2,6], "ITS")
+WMC_16S <- c("WMC", round(ad_16S_WMC_h$aov.tab[2,5], 3), ad_16S_WMC_h$aov.tab[2,6], round(ad_16S_WMC_d$aov.tab[2,5], 3), ad_16S_WMC_d$aov.tab[2,6], "16S")
+WMC_ITS <- c("WMC", round(ad_ITS_WMC_h$aov.tab[2,5], 3), ad_ITS_WMC_h$aov.tab[2,6], round(ad_ITS_WMC_d$aov.tab[2,5], 3), ad_ITS_WMC_d$aov.tab[2,6], "ITS")
+
+tables <- rbind(overall_16S, CZO_16S, WMC_16S, tables_16S, overall_ITS, CZO_ITS, WMC_ITS, tables_ITS)
+```
+
+```{r}
+# Overall
+
+for(i in levels(as.factor(data_16S_tss@sam_data$Horizon))){
+  sub <- subset_samples(data_16S_tss, Horizon %in% i)
+  df_16S <- data.frame(sample_data(sub))
+  dist_16S <- phyloseq::distance(subset_samples(sub, Depth > 0), "bray")
+  set.seed(12290)
+  out <- adonis(dist_16S ~ Climosequence*MAT, data = df_16S %>% filter(Depth > 0), permutations = 999) 
+  print(i)
+  print(out)
+} # all interact
+
+tab.temp <- data.frame()
+x <- data.frame(matrix(ncol = 4))
+colnames(x) <- c("climo", "horizon", "p", "r2")
+for(i in levels(as.factor(data_16S_tss@sam_data$Horizon))){
+  for(j in levels(as.factor(data_16S_tss@sam_data$Climosequence))){
+    sub <- subset_samples(data_16S_tss, Horizon %in% i & Climosequence %in% j)
+    df_16S <- data.frame(sample_data(sub))
+    dist_16S <- phyloseq::distance(subset_samples(sub, Depth > 0), "bray")
+    set.seed(12290)
+    out <- adonis(dist_16S ~ MAT, data = df_16S %>% filter(Depth > 0), permutations = 999) 
+    x$p <- p.adjust(out$aov.tab[1,6], method = "bonferroni", n = 6)
+    x$r <- out$aov.tab[1,5]
+    x$climo <- j
+    x$horizon <- i
+    tab.temp <- rbind(tab.temp, x)
+  }
+}
+
+tab.map <- data.frame()
+x <- data.frame(matrix(ncol = 4))
+colnames(x) <- c("climo", "horizon", "p", "r2")
+for(i in levels(as.factor(data_16S_tss@sam_data$Horizon))){
+  for(j in levels(as.factor(data_16S_tss@sam_data$Climosequence))){
+    sub <- subset_samples(data_16S_tss, Horizon %in% i & Climosequence %in% j)
+    df_16S <- data.frame(sample_data(sub))
+    dist_16S <- phyloseq::distance(subset_samples(sub, Depth > 0), "bray")
+    set.seed(12290)
+    out <- adonis(dist_16S ~ MAP, data = df_16S %>% filter(Depth > 0), permutations = 999) 
+    x$p <- p.adjust(out$aov.tab[1,6], method = "bonferroni", n = 6)
+    x$r <- out$aov.tab[1,5]
+    x$climo <- j
+    x$horizon <- i
+    tab.map <- rbind(tab.map, x)
+  }
+}
+
+
+
+
+
+data_16S_tss_A <- subset_samples(data_16S_tss, Horizon == "A")
+df_16S <- data.frame(sample_data(data_16S_tss_A))
+dist_16S <- phyloseq::distance(subset_samples(data_16S_tss_A, Depth > 0), "bray")
+
+set.seed(12290)
+ad_16S_overall_A <- adonis(dist_16S ~ Climosequence*MAT, data = df_16S %>% filter(Depth > 0), permutations = 999) 
+ad_16S_overall_A
+
+data_16S_tss_B <- subset_samples(data_16S_tss, Horizon == "B")
+df_16S <- data.frame(sample_data(data_16S_tss_B))
+dist_16S <- phyloseq::distance(subset_samples(data_16S_tss_B, Depth > 0), "bray")
+
+set.seed(12290)
+ad_16S_overall_B <- adonis(dist_16S ~ Climosequence*MAT, data = df_16S %>% filter(Depth > 0), permutations = 999) 
+ad_16S_overall_B
+
+data_16S_tss_C <- subset_samples(data_16S_tss, Horizon == "C")
+df_16S <- data.frame(sample_data(data_16S_tss_C))
+dist_16S <- phyloseq::distance(subset_samples(data_16S_tss_C, Depth > 0), "bray")
+
+set.seed(12290)
+ad_16S_overall_C <- adonis(dist_16S ~ Climosequence*MAT, data = df_16S %>% filter(Depth > 0), permutations = 999) 
+ad_16S_overall_C
+
+data_16S_tss_A <- subset_samples(data_16S_tss, Horizon == "A")
+df_16S <- data.frame(sample_data(data_16S_tss_A))
+dist_16S <- phyloseq::distance(subset_samples(data_16S_tss_A, Depth > 0), "bray")
+
+set.seed(12290)
+ad_16S_overall_A <- adonis(dist_16S ~ Climosequence*MAT, data = df_16S %>% filter(Depth > 0), permutations = 999) 
+ad_16S_overall_A
+
+data_16S_tss_B <- subset_samples(data_16S_tss, Horizon == "B")
+df_16S <- data.frame(sample_data(data_16S_tss_B))
+dist_16S <- phyloseq::distance(subset_samples(data_16S_tss_B, Depth > 0), "bray")
+
+set.seed(12290)
+ad_16S_overall_B <- adonis(dist_16S ~ Climosequence*MAT, data = df_16S %>% filter(Depth > 0), permutations = 999) 
+ad_16S_overall_B
+
+data_16S_tss_C <- subset_samples(data_16S_tss, Horizon == "C")
+df_16S <- data.frame(sample_data(data_16S_tss_C))
+dist_16S <- phyloseq::distance(subset_samples(data_16S_tss_C, Depth > 0), "bray")
+
+set.seed(12290)
+ad_16S_overall_C <- adonis(dist_16S ~ Climosequence*MAT, data = df_16S %>% filter(Depth > 0), permutations = 999) 
+ad_16S_overall_C
+
+```
+
+
+# Individual PCoAs for sites
+```{r}
+data_16S_tss@sam_data$Site <- dplyr::recode(data_16S_tss@sam_data$Site, SJE = "SJER", PRO = "PROV")
+data_16S_tss@sam_data$Site <- ordered(data_16S_tss@sam_data$Site, c("SJER", "SPR", "PROV", "SH", "GR2", "GR3", "GR5", "BAR"))
+
+myplots <- list()
+for(i in levels(as.factor(data_16S_tss@sam_data$Site))){
+  sub <- subset_samples(data_16S_tss, Site %in% i)
+  ordu <- ordinate(sub, "PCoA", "bray", weighted = T)
+  p <- plot_ordination(sub, ordu)
+  p2 <- ggplot(p$data, p$mapping) +
+    geom_point(aes(shape = Horizon, fill = Depth), size = 1.5) +
+    scale_shape_manual(values = c(21, 24, 22)) +
+    scale_fill_viridis_c(limits = c(0, 135), guide = "colorbar", direction = -1) +
+    ggtitle(i) +
+    scale_x_continuous(name = paste0(paste0("PCoA 1 (", round(100*as.data.frame(ordu$values)[1,2], 1)), "%)")) +
+    scale_y_continuous(name = paste0(paste0("PCoA 2 (", round(100*as.data.frame(ordu$values)[2,2], 1)), "%)")) +
+    labs(shape = "Horizon") +
+    theme(axis.text = element_text(size = 8), axis.title = element_text(size = 10))
+  myplots[[i]] <- p2 + theme(legend.position = "none")
+  print(i)
+}
+
+leg <- get_legend(myplots[[1]] + theme(legend.position = "bottom"))
+grid_16S <- plot_grid(plotlist = myplots, align = "vh", ncol = 4)
+
+data_ITS_tss@sam_data$Site <- dplyr::recode(data_ITS_tss@sam_data$Site, SJE = "SJER", PRO = "PROV")
+data_ITS_tss@sam_data$Site <- ordered(data_ITS_tss@sam_data$Site, c("SJER", "SPR", "PROV", "SH", "GR2", "GR3", "GR5", "BAR"))
+
+myplots <- list()
+for(i in levels(as.factor(data_ITS_tss@sam_data$Site))){
+  sub <- subset_samples(data_ITS_tss, Site %in% i)
+  ordu <- ordinate(sub, "PCoA", "bray", weighted = T)
+  p <- plot_ordination(sub, ordu)
+  p2 <- ggplot(p$data, p$mapping) +
+    geom_point(aes(shape = Horizon, fill = Depth), size = 1.5) +
+    scale_shape_manual(values = c(21, 24, 22)) +
+    scale_fill_viridis_c("Depth (cm)", limits = c(0, 135), guide = "colorbar", direction = -1) +
+    ggtitle(i) +
+    scale_x_continuous(name = paste0(paste0("PCoA 1 (", round(100*as.data.frame(ordu$values)[1,2], 1)), "%)")) +
+    scale_y_continuous(name = paste0(paste0("PCoA 2 (", round(100*as.data.frame(ordu$values)[2,2], 1)), "%)")) +
+    labs(shape = "Horizon")+
+    theme(axis.text = element_text(size = 8), axis.title = element_text(size = 10))
+  myplots[[i]] <- p2 + theme(legend.position = "none")
+  print(i)
+}
+
+leg <- get_legend(myplots[[1]] + theme(legend.position = "bottom", legend.title = element_text(size = 12), legend.justification = "center"))
+grid_ITS <- plot_grid(plotlist = myplots, align = "vh", ncol = 4)
+grid_combined <- plot_grid(grid_16S, grid_ITS, ncol = 1, labels = "AUTO")
+prow <- plot_grid(grid_combined, leg, ncol = 1, rel_heights = c(1, 0.1))
+
+ggsave("~/Dropbox/DeepSoil_Microbial/Fig_S3.pdf", dpi = 600, height = 7.25, width = 7, units = "in")
+prow
+dev.off()
+```
+
+# Phyla plots
+```{r}
+#Seperate Proteos, assign grouping by Class, glom, and melt
+proteos <- subset_taxa(data_16S_tss, Class == "D_2__Alphaproteobacteria" |
+                         Class == "D_2__Deltaproteobacteria" |
+                         Class == "D_2__Gammaproteobacteria")
+colnames(tax_table(proteos))[1] <- "group"
+tax_table(proteos)[,"group"] <- tax_table(proteos)[,"Class"]
+proteos_glom <- tax_glom(proteos, taxrank = "group")
+proteos_melt <- psmelt(proteos_glom)
+
+#Do same for Archaea
+
+archaea <- subset_taxa(data_16S_tss, Kingdom == "D_0__Archaea")
+colnames(tax_table(archaea))[1] <- "group"
+archaea_glom <- tax_glom(archaea, taxrank = "group")
+archaea_melt <- psmelt(archaea_glom)
+
+#Get the rest of the abundant phyla, assign grouping by phylum, glom, and melt
+abundant_non_proteos <- subset_taxa(data_16S_tss, Phylum == "D_1__Verrucomicrobia" |
+                                                  Phylum == "D_1__Chloroflexi"|
+                                                  Phylum == "D_1__Planctomycetes"|
+                                                  Phylum == "D_1__Nitrospirae" |
+                                                  Phylum == "D_1__Gemmatimonadetes" |
+                                                  Phylum == "D_1__Bacteroidetes" |
+                                                  Phylum == "D_1__Acidobacteria" |
+                                                  Phylum == "D_1__Actinobacteria")
+colnames(tax_table(abundant_non_proteos))[1] <- "group"
+tax_table(abundant_non_proteos)[,"group"] <- tax_table(abundant_non_proteos)[,"Phylum"]
+abundant_non_proteos_glom <- tax_glom(abundant_non_proteos, taxrank = "group")
+abundant_non_proteos_melt <- psmelt(abundant_non_proteos_glom)
+
+#concatenate the datasets
+data_16S_grouping <- rbind(proteos_melt, abundant_non_proteos_melt, archaea_melt)
+
+#####
+# Now split by species
+
+sum2 <- data_16S_grouping %>% 
+  group_by(Site, Horizon, group) %>%
+  summarise(means = mean(Abundance))
+
+sum2$group <- sapply(strsplit(as.character(sum2$group), "__"), `[`, 2)
+
+rare <- sum2 %>%
+  group_by(Horizon, Site) %>%
+  summarise(means = 1- sum(means)) %>%
+  mutate(group = "Rare Taxa")
+
+sum2 = rbind(sum2, rare)
+
+sum2$group <- ordered(sum2$group, c("Archaea", "Alphaproteobacteria", "Deltaproteobacteria", 
+                                    "Gammaproteobacteria", "Acidobacteria",
+                                    "Actinobacteria", "Bacteroidetes", "Chloroflexi",
+                                    "Gemmatimonadetes", "Nitrospirae", "Planctomycetes",
+                                    "Verrucomicrobia", "Rare Taxa"))
+
+sum2$Site <- dplyr::recode(sum2$Site, SJE = "SJER", PRO = "PROV")
+sum2$Site <- ordered(sum2$Site, c("SJER", "SPR", "PROV", "SH", "GR2", "GR3", "GR5", "BAR"))
+
+
+p <- ggplot(sum2, aes(x = Site, y = means, fill = group)) +
+  geom_bar(position = "stack", stat = "identity", col = "black") +
+  facet_grid(Horizon~.) +
+  theme(legend.position = "right", legend.title = element_blank(), axis.line = element_blank()) +
+  scale_fill_manual(values = c("#ff7f0e", "#0e334d","#1f77b4", "#abd2ed", "yellow",
+                               "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", 
+                               "#7f7f7f", "#17becf", "white")) +
+  scale_y_continuous(name = NULL, breaks = NULL) +
+  panel_border() +
+  theme(axis.title = element_blank(), strip.text.y = element_text(angle = 0))
+
+ggsave("~/Dropbox/DeepSoil_Microbial/Fig_S1.pdf", height = 6.5, width = 6.5, units = "in", dpi = 600)
+p
+dev.off()
+
+# ITS ------------------------------------------------------------------------
+abundant_ITS <- subset_taxa(data_ITS_tss, Phylum == "p__Ascomycota" |
+                                          Phylum == "p__Basidiomycota"|
+                                          Phylum == "p__Mortierellomycota"|
+                                          Phylum == "p__Mucoromycota")
+colnames(tax_table(abundant_ITS))[1] <- "group"
+tax_table(abundant_ITS)[,"group"] <- tax_table(abundant_ITS)[,"Phylum"]
+abundant_ITS_glom <- tax_glom(abundant_ITS, taxrank = "group")
+abundant_ITS_melt <- psmelt(abundant_ITS_glom)
+
+sum2 <- abundant_ITS_melt %>% 
+  group_by(Site, Horizon, group) %>%
+  summarise(means = mean(Abundance))
+
+#Fix names
+sum2$group <- sapply(strsplit(as.character(sum2$group), "__"), `[`, 2)
+
+#Everything that's left is considered rare  
+rare <- sum2 %>%
+  group_by(Site, Horizon) %>%
+  summarise(means = 1- sum(means)) %>%
+  mutate(group = "Rare Taxa")
+
+#concatenate the datasets
+sum2 = rbind(sum2, rare)
+
+#sum2$group<- dplyr::recode(sum2$group, unidentified = "Unidentified")
+
+#order groups
+sum2$group <- ordered(sum2$group, c("Ascomycota", "Basidiomycota",
+                                    "Mortierellomycota", "Mucoromycota", 
+                                    "Rare Taxa"))
+sum2$Site <- ordered(sum2$Site, c("GR2", "GR3", "GR5", "BAR", "SJE", "SPR", "PRO", "SH"))
+
+p2 <- ggplot(sum2, aes(x = Site, y = means, fill = group)) +
+  geom_bar(position = "stack", stat = "identity", col = "black") +
+  facet_grid(Horizon~.) +
+  theme(legend.position = "right", legend.title = element_blank(), axis.line = element_blank()) +
+  scale_fill_manual(values = c("#ff7f0e","#1f77b4", "yellow", "darkgreen", "white")) +
+  scale_y_continuous(name = NULL, breaks = NULL) +
+  panel_border() +
+  theme(axis.title = element_blank())
+
+
+#### 
+## At the Class level
+####
+
+abundant_ITS <- subset_taxa(data_ITS_tss, Class == "c__Agaricomycetes" |
+                                          Class == "c__Leotiomycetes"|
+                                          Class == "c__Dothideomycetes"|
+                                          Class == "c__Pezizomycetes" |
+                                          Class == "c__Geminibasidiomycetes" |
+                                          Class == "c__Mortierellomycetes" |
+                                          Class == "c__Sordariomycetes" |
+                                          Class == "c__Eurotiomycetes" |
+                                          Class == "c__Umbelopsidomycetes")
+colnames(tax_table(abundant_ITS))[1] <- "group"
+tax_table(abundant_ITS)[,"group"] <- tax_table(abundant_ITS)[,"Class"]
+abundant_ITS_glom <- tax_glom(abundant_ITS, taxrank = "group")
+abundant_ITS_melt <- psmelt(abundant_ITS_glom)
+
+sum2 <- abundant_ITS_melt %>% 
+  group_by(Site, Horizon, group) %>%
+  summarise(means = mean(Abundance))
+
+#Fix names
+sum2$group <- sapply(strsplit(as.character(sum2$group), "__"), `[`, 2)
+
+#Everything that's left is considered rare  
+rare <- sum2 %>%
+  group_by(Site, Horizon) %>%
+  summarise(means = 1- sum(means)) %>%
+  mutate(group = "Rare Taxa")
+
+#concatenate the datasets
+sum2 = rbind(sum2, rare)
+
+#sum2$group<- dplyr::recode(sum2$group, unidentified = "Unidentified")
+
+#order groups
+sum2$group <- ordered(sum2$group, c("Agaricomycetes", "Dothideomycetes",
+                                    "Eurotiomycetes", "Geminibasidiomycetes",
+                                    "Leotiomycetes", "Mortierellomycetes", 
+                                    "Pezizomycetes", "Sordariomycetes",
+                                    "Umbelopsidomycetes", "Rare Taxa"))
+
+sum2$Site <- dplyr::recode(sum2$Site, SJE = "SJER", PRO = "PROV")
+sum2$Site <- ordered(sum2$Site, c("SJER", "SPR", "PROV", "SH", "GR2", "GR3", "GR5", "BAR"))
+
+p2 <- ggplot(sum2, aes(x = Site, y = means, fill = group)) +
+  geom_bar(position = "stack", stat = "identity", col = "black") +
+  facet_grid(Horizon~.) +
+  theme(legend.position = "right", legend.title = element_blank(), axis.line = element_blank()) +
+  scale_fill_manual(values = c("#ff7f0e","#1f77b4", "yellow",
+                               "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", 
+                                "#17becf", "white")) +
+  scale_y_continuous(name = NULL, breaks = NULL) +
+  panel_border() +
+  theme(axis.title = element_blank(), strip.text.y = element_text(angle = 0))
+
+ggsave("~/Dropbox/DeepSoil_Microbial/Fig_S2.pdf", height = 6.5, width = 6.5, units = "in", dpi = 600)
+p2
+dev.off()
+
+```
+
+
+# Geochem pRDA (Borcard D, Legendre P, Drapeau P (1992) Partialling out the spatial component of ecological variation. Ecology. 84: 511-525.)
+```{r}
+data_16S_tss_RDA <- data_16S_tss %>% subset_samples(pH.CaCl2 > 1)
+df.16S <- data.frame(sample_data(data_16S_tss_RDA))
+
+
+soil_chem <- df.16S[, c("pH.CaCl2", "Mg.mmol.kgsoil", "Fe.mmol.kgsoil", "K.mmol.kgsoil", "Ca.mmol.kgsoil", "Na.mmol.kgsoil", 
+                        "Al.mmol.kgsoil", "Si.mmol.kgsoil", "P.mmol.kgsoil", "C.mmol.kgsoil", "N.mmol.kgsoil")]
+
+dist_chem <- vegan::vegdist(soil_chem, na.rm = T)
+
+ad <- adonis(dist_chem ~ df.16S$Depth*df.16S$Site, scale = T) 
+
+a <- aov(C.mmol.kgsoil ~ Horizon*Site, df.16S)
+
+
+rda_horizon <- rda(soil_chem ~ df.16S$Horizon + Condition(df.16S$Site), scale = T) #7.6%
+anova(rda_horizon)
+rda_depth <- rda(soil_chem ~ df.16S$Depth + Condition(df.16S$Site), scale = T) #6.5%
+anova(rda_depth)
+
+#Let's just see what climate is....
+rda_climate <- rda(soil_chem ~ df.16S$MAT + df.16S$MAP + Condition(df.16S$Horizon), scale = T) #25.3%
+anova(rda_climate)
+```
+
+# Variance Partitioning
+```{r}
+df.16S <- data.frame(sample_data(data_16S_tss))
+OTU_16S <- t(as(otu_table(data_16S_tss), "matrix"))
+OTU_16S <- as.data.frame(OTU_16S)
+dist_16S <- vegdist(OTU_16S, "bray")
+set.seed(1221990)
+rda_16S_soil <- dbrda(dist_16S ~ pH.CaCl2 + Mg.mmol.kgsoil + Fe.mmol.kgsoil + K.mmol.kgsoil + Ca.mmol.kgsoil + Na.mmol.kgsoil + Al.mmol.kgsoil + Si.mmol.kgsoil + P.mmol.kgsoil + C.mmol.kgsoil + N.mmol.kgsoil,
+                      df.16S, na.action = na.omit)
+#varpart(dist_16S, ~ pH.2 + C.x + N.x, data = df.16S)
+## overall test
+set.seed(1221990)
+anova(rda_16S_soil, permutations = 9999) # p < 0.001
+## Marginal or Type III effects
+set.seed(1221990)
+anova(rda_16S_soil, by="mar") # pH and ammonium are sig.
+rda_16S_soil # 32.8%
+
+
+#soil_chem <- df.16S %>% 
+#  dplyr::select(pH.CaCl2, Mg.mmol.kgsoil, Fe.mmol.kgsoil, K.mmol.kgsoil, Ca.mmol.kgsoil, 
+#                Na.mmol.kgsoil, Al.mmol.kgsoil, Si.mmol.kgsoil, P.mmol.kgsoil, C.mmol.kgsoil, N.mmol.kgsoil)
+
+
+#Variance Partinioning ----------------------------------
+# Overall -----------------------
+data_16S_tss_RDA <- data_16S_tss %>% subset_samples(pH.CaCl2 > 1)
+df.16S <- data.frame(sample_data(data_16S_tss_RDA))
+OTU_16S <- t(as(otu_table(data_16S_tss_RDA), "matrix"))
+OTU_16S <- as.data.frame(OTU_16S)
+dist_16S <- vegdist(OTU_16S, "bray")
+set.seed(01221990)
+overall_16S_varpart <- varpart(Y = dist_16S, ~df.16S$pH.CaCl2 + df.16S$Mg.mmol.kgsoil + df.16S$Fe.mmol.kgsoil + df.16S$K.mmol.kgsoil + 
+                                 df.16S$Ca.mmol.kgsoil + df.16S$Na.mmol.kgsoil + df.16S$Al.mmol.kgsoil + df.16S$Si.mmol.kgsoil + 
+                                 df.16S$P.mmol.kgsoil + df.16S$C.mmol.kgsoil + df.16S$N.mmol.kgsoil, 
+                               ~df.16S$MAT + df.16S$MAP)
+
+a <- anova(dbrda(dist_16S  ~  df.16S$pH.CaCl2 + df.16S$Mg.mmol.kgsoil + df.16S$Fe.mmol.kgsoil + df.16S$K.mmol.kgsoil + 
+                                 df.16S$Ca.mmol.kgsoil + df.16S$Na.mmol.kgsoil + df.16S$Al.mmol.kgsoil + df.16S$Si.mmol.kgsoil + 
+                                 df.16S$P.mmol.kgsoil + df.16S$C.mmol.kgsoil + df.16S$N.mmol.kgsoil + 
+                          Condition(df.16S$MAT) + Condition(df.16S$MAP)))
+
+b <- anova(dbrda(dist_16S  ~  Condition(df.16S$pH.CaCl2) + Condition(df.16S$Mg.mmol.kgsoil) + Condition(df.16S$Fe.mmol.kgsoil) + Condition(df.16S$K.mmol.kgsoil) + 
+                                 Condition(df.16S$Ca.mmol.kgsoil) + Condition(df.16S$Na.mmol.kgsoil) + Condition(df.16S$Al.mmol.kgsoil) + Condition(df.16S$Si.mmol.kgsoil) + 
+                                 Condition(df.16S$P.mmol.kgsoil) + Condition(df.16S$C.mmol.kgsoil) + Condition(df.16S$N.mmol.kgsoil) + 
+                          df.16S$MAT + df.16S$MAP))
+
+
+data_ITS_tss_RDA <- data_ITS_tss %>% subset_samples(pH.CaCl2 > 1)
+df.ITS <- data.frame(sample_data(data_ITS_tss_RDA))
+OTU_ITS <- t(as(otu_table(data_ITS_tss_RDA), "matrix"))
+OTU_ITS <- as.data.frame(OTU_ITS)
+dist_ITS <- vegdist(OTU_ITS, "bray")
+set.seed(01221990)
+overall_ITS_varpart <- varpart(Y = dist_ITS, ~df.ITS$pH.CaCl2 + df.ITS$Mg.mmol.kgsoil + df.ITS$Fe.mmol.kgsoil + df.ITS$K.mmol.kgsoil + 
+                                 df.ITS$Ca.mmol.kgsoil + df.ITS$Na.mmol.kgsoil + df.ITS$Al.mmol.kgsoil + df.ITS$Si.mmol.kgsoil + 
+                                 df.ITS$P.mmol.kgsoil + df.ITS$C.mmol.kgsoil + df.ITS$N.mmol.kgsoil, 
+                               ~df.ITS$MAT + df.ITS$MAP)
+
+c <- anova(dbrda(dist_ITS  ~  df.ITS$pH.CaCl2 + df.ITS$Mg.mmol.kgsoil + df.ITS$Fe.mmol.kgsoil + df.ITS$K.mmol.kgsoil + 
+                                 df.ITS$Ca.mmol.kgsoil + df.ITS$Na.mmol.kgsoil + df.ITS$Al.mmol.kgsoil + df.ITS$Si.mmol.kgsoil + 
+                                 df.ITS$P.mmol.kgsoil + df.ITS$C.mmol.kgsoil + df.ITS$N.mmol.kgsoil + 
+                          Condition(df.ITS$MAT) + Condition(df.ITS$MAP)))
+
+d <- anova(dbrda(dist_ITS  ~  Condition(df.ITS$pH.CaCl2) + Condition(df.ITS$Mg.mmol.kgsoil) + Condition(df.ITS$Fe.mmol.kgsoil) + Condition(df.ITS$K.mmol.kgsoil) + 
+                                 Condition(df.ITS$Ca.mmol.kgsoil) + Condition(df.ITS$Na.mmol.kgsoil) + Condition(df.ITS$Al.mmol.kgsoil) + Condition(df.ITS$Si.mmol.kgsoil) + 
+                                 Condition(df.ITS$P.mmol.kgsoil) + Condition(df.ITS$C.mmol.kgsoil) + Condition(df.ITS$N.mmol.kgsoil) + 
+                          df.ITS$MAT + df.ITS$MAP))
+
+overall_varplot_data <- rbind(overall_16S_varpart$part$indfract[1:4,], overall_ITS_varpart$part$indfract[1:4,])
+overall_varplot_data$variable <- c("Soil Chemistry", "Interaction", "Climate", "Residual", "Soil Chemistry", "Interaction", "Climate", "Residual")
+overall_varplot_data$taxa <- c("Prokaryote", "Prokaryote", "Prokaryote", "Prokaryote", "Fungi", "Fungi", "Fungi", "Fungi")
+
+overall_varplot_data %>% 
+  mutate(variable = ordered(variable, c("Residual", "Climate", "Interaction", "Soil Chemistry")),
+         taxa = ordered(taxa, c("Prokaryote", "Fungi"))) %>%
+  ggplot(aes(x = taxa, y = Adj.R.squared*100, fill = variable)) +
+  geom_bar(stat = "identity", position = "stack", col = "black", size = 0.5) +
+  labs(y = "Variation explained (%)", x = NULL) +
+  scale_fill_manual(values = c("gray", "#519DC4", "#6BAD62", "#FFCD39")) +
+  theme(legend.position = "bottom")-> p_varpart_overall
+
+# A SSCZO
+data_16S_tss_RDA <- data_16S_tss %>% subset_samples(pH.CaCl2 > 1 & Horizon == "A" & Climo == "CZO")
+df.16S <- data.frame(sample_data(data_16S_tss_RDA))
+OTU_16S <- t(as(otu_table(data_16S_tss_RDA), "matrix"))
+OTU_16S <- as.data.frame(OTU_16S)
+dist_16S <- vegdist(OTU_16S, "bray")
+set.seed(01221990)
+overall_16S_varpart <- varpart(Y = dist_16S, ~df.16S$pH.CaCl2 + df.16S$Mg.mmol.kgsoil + df.16S$Fe.mmol.kgsoil + df.16S$K.mmol.kgsoil + 
+                                 df.16S$Ca.mmol.kgsoil + df.16S$Na.mmol.kgsoil + df.16S$Al.mmol.kgsoil + df.16S$Si.mmol.kgsoil + 
+                                 df.16S$P.mmol.kgsoil + df.16S$C.mmol.kgsoil + df.16S$N.mmol.kgsoil, 
+                               ~df.16S$MAT + df.16S$MAP)
+
+
+data_ITS_tss_RDA <- data_ITS_tss %>% subset_samples(pH.CaCl2 > 1 & Horizon == "A" & Climo == "CZO")
+df.ITS <- data.frame(sample_data(data_ITS_tss_RDA))
+OTU_ITS <- t(as(otu_table(data_ITS_tss_RDA), "matrix"))
+OTU_ITS <- as.data.frame(OTU_ITS)
+dist_ITS <- vegdist(OTU_ITS, "bray")
+set.seed(01221990)
+overall_ITS_varpart <- varpart(Y = dist_ITS, ~df.ITS$pH.CaCl2 + df.ITS$Mg.mmol.kgsoil + df.ITS$Fe.mmol.kgsoil + df.ITS$K.mmol.kgsoil + 
+                                 df.ITS$Ca.mmol.kgsoil + df.ITS$Na.mmol.kgsoil + df.ITS$Al.mmol.kgsoil + df.ITS$Si.mmol.kgsoil + 
+                                 df.ITS$P.mmol.kgsoil + df.ITS$C.mmol.kgsoil + df.ITS$N.mmol.kgsoil, 
+                               ~df.ITS$MAT + df.ITS$MAP)
+SSCZO_A_varplot_data <- rbind(overall_16S_varpart$part$indfract[1:4,], overall_ITS_varpart$part$indfract[1:4,])
+SSCZO_A_varplot_data$variable <- c("Soil Chemistry", "Interaction", "Climate", "Residual", "Soil Chemistry", "Interaction", "Climate", "Residual")
+SSCZO_A_varplot_data$taxa <- c("Prokaryote", "Prokaryote", "Prokaryote", "Prokaryote", "Fungi", "Fungi", "Fungi", "Fungi")
+SSCZO_A_varplot_data$horizon <- "A"
+SSCZO_A_varplot_data$climosequence <- "CZO"
+
+# A WMC
+data_16S_tss_RDA <- data_16S_tss %>% subset_samples(pH.CaCl2 > 1 & Horizon == "A" & Climo == "WM")
+df.16S <- data.frame(sample_data(data_16S_tss_RDA))
+OTU_16S <- t(as(otu_table(data_16S_tss_RDA), "matrix"))
+OTU_16S <- as.data.frame(OTU_16S)
+dist_16S <- vegdist(OTU_16S, "bray")
+set.seed(01221990)
+overall_16S_varpart <- varpart(Y = dist_16S, ~df.16S$pH.CaCl2 + df.16S$Mg.mmol.kgsoil + df.16S$Fe.mmol.kgsoil + df.16S$K.mmol.kgsoil + 
+                                 df.16S$Ca.mmol.kgsoil + df.16S$Na.mmol.kgsoil + df.16S$Al.mmol.kgsoil + df.16S$Si.mmol.kgsoil + 
+                                 df.16S$P.mmol.kgsoil + df.16S$C.mmol.kgsoil + df.16S$N.mmol.kgsoil, 
+                               ~df.16S$MAT + df.16S$MAP)
+
+
+data_ITS_tss_RDA <- data_ITS_tss %>% subset_samples(pH.CaCl2 > 1 & Horizon == "A" & Climo == "WM")
+df.ITS <- data.frame(sample_data(data_ITS_tss_RDA))
+OTU_ITS <- t(as(otu_table(data_ITS_tss_RDA), "matrix"))
+OTU_ITS <- as.data.frame(OTU_ITS)
+dist_ITS <- vegdist(OTU_ITS, "bray")
+set.seed(01221990)
+overall_ITS_varpart <- varpart(Y = dist_ITS, ~df.ITS$pH.CaCl2 + df.ITS$Mg.mmol.kgsoil + df.ITS$Fe.mmol.kgsoil + df.ITS$K.mmol.kgsoil + 
+                                 df.ITS$Ca.mmol.kgsoil + df.ITS$Na.mmol.kgsoil + df.ITS$Al.mmol.kgsoil + df.ITS$Si.mmol.kgsoil + 
+                                 df.ITS$P.mmol.kgsoil + df.ITS$C.mmol.kgsoil + df.ITS$N.mmol.kgsoil, 
+                               ~df.ITS$MAT + df.ITS$MAP)
+WMC_A_varplot_data <- rbind(overall_16S_varpart$part$indfract[1:4,], overall_ITS_varpart$part$indfract[1:4,])
+WMC_A_varplot_data$variable <- c("Soil Chemistry", "Interaction", "Climate", "Residual", "Soil Chemistry", "Interaction", "Climate", "Residual")
+WMC_A_varplot_data$taxa <- c("Prokaryote", "Prokaryote", "Prokaryote", "Prokaryote", "Fungi", "Fungi", "Fungi", "Fungi")
+WMC_A_varplot_data$horizon <- "A"
+WMC_A_varplot_data$climosequence <- "WM"
+
+# B SSCZO
+data_16S_tss_RDA <- data_16S_tss %>% subset_samples(pH.CaCl2 > 1 & Horizon == "B" & Climo == "CZO")
+df.16S <- data.frame(sample_data(data_16S_tss_RDA))
+OTU_16S <- t(as(otu_table(data_16S_tss_RDA), "matrix"))
+OTU_16S <- as.data.frame(OTU_16S)
+dist_16S <- vegdist(OTU_16S, "bray")
+set.seed(01221990)
+overall_16S_varpart <- varpart(Y = dist_16S, ~df.16S$pH.CaCl2 + df.16S$Mg.mmol.kgsoil + df.16S$Fe.mmol.kgsoil + df.16S$K.mmol.kgsoil + 
+                                 df.16S$Ca.mmol.kgsoil + df.16S$Na.mmol.kgsoil + df.16S$Al.mmol.kgsoil + df.16S$Si.mmol.kgsoil + 
+                                 df.16S$P.mmol.kgsoil + df.16S$C.mmol.kgsoil + df.16S$N.mmol.kgsoil, 
+                               ~df.16S$MAT + df.16S$MAP)
+
+
+data_ITS_tss_RDA <- data_ITS_tss %>% subset_samples(pH.CaCl2 > 1 & Horizon == "B" & Climo == "CZO")
+df.ITS <- data.frame(sample_data(data_ITS_tss_RDA))
+OTU_ITS <- t(as(otu_table(data_ITS_tss_RDA), "matrix"))
+OTU_ITS <- as.data.frame(OTU_ITS)
+dist_ITS <- vegdist(OTU_ITS, "bray")
+set.seed(01221990)
+overall_ITS_varpart <- varpart(Y = dist_ITS, ~df.ITS$pH.CaCl2 + df.ITS$Mg.mmol.kgsoil + df.ITS$Fe.mmol.kgsoil + df.ITS$K.mmol.kgsoil + 
+                                 df.ITS$Ca.mmol.kgsoil + df.ITS$Na.mmol.kgsoil + df.ITS$Al.mmol.kgsoil + df.ITS$Si.mmol.kgsoil + 
+                                 df.ITS$P.mmol.kgsoil + df.ITS$C.mmol.kgsoil + df.ITS$N.mmol.kgsoil, 
+                               ~df.ITS$MAT + df.ITS$MAP)
+SSCZO_B_varplot_data <- rbind(overall_16S_varpart$part$indfract[1:4,], overall_ITS_varpart$part$indfract[1:4,])
+SSCZO_B_varplot_data$variable <- c("Soil Chemistry", "Interaction", "Climate", "Residual", "Soil Chemistry", "Interaction", "Climate", "Residual")
+SSCZO_B_varplot_data$taxa <- c("Prokaryote", "Prokaryote", "Prokaryote", "Prokaryote", "Fungi", "Fungi", "Fungi", "Fungi")
+SSCZO_B_varplot_data$horizon <- "B"
+SSCZO_B_varplot_data$climosequence <- "CZO"
+
+# B WMC
+data_16S_tss_RDA <- data_16S_tss %>% subset_samples(pH.CaCl2 > 1 & Horizon == "B" & Climo == "WM")
+df.16S <- data.frame(sample_data(data_16S_tss_RDA))
+OTU_16S <- t(as(otu_table(data_16S_tss_RDA), "matrix"))
+OTU_16S <- as.data.frame(OTU_16S)
+dist_16S <- vegdist(OTU_16S, "bray")
+set.seed(01221990)
+overall_16S_varpart <- varpart(Y = dist_16S, ~df.16S$pH.CaCl2 + df.16S$Mg.mmol.kgsoil + df.16S$Fe.mmol.kgsoil + df.16S$K.mmol.kgsoil + 
+                                 df.16S$Ca.mmol.kgsoil + df.16S$Na.mmol.kgsoil + df.16S$Al.mmol.kgsoil + df.16S$Si.mmol.kgsoil + 
+                                 df.16S$P.mmol.kgsoil + df.16S$C.mmol.kgsoil + df.16S$N.mmol.kgsoil, 
+                               ~df.16S$MAT + df.16S$MAP)
+
+
+data_ITS_tss_RDA <- data_ITS_tss %>% subset_samples(pH.CaCl2 > 1 & Horizon == "B" & Climo == "WM")
+df.ITS <- data.frame(sample_data(data_ITS_tss_RDA))
+OTU_ITS <- t(as(otu_table(data_ITS_tss_RDA), "matrix"))
+OTU_ITS <- as.data.frame(OTU_ITS)
+dist_ITS <- vegdist(OTU_ITS, "bray")
+set.seed(01221990)
+overall_ITS_varpart <- varpart(Y = dist_ITS, ~df.ITS$pH.CaCl2 + df.ITS$Mg.mmol.kgsoil + df.ITS$Fe.mmol.kgsoil + df.ITS$K.mmol.kgsoil + 
+                                 df.ITS$Ca.mmol.kgsoil + df.ITS$Na.mmol.kgsoil + df.ITS$Al.mmol.kgsoil + df.ITS$Si.mmol.kgsoil + 
+                                 df.ITS$P.mmol.kgsoil + df.ITS$C.mmol.kgsoil + df.ITS$N.mmol.kgsoil, 
+                               ~df.ITS$MAT + df.ITS$MAP)
+WMC_B_varplot_data <- rbind(overall_16S_varpart$part$indfract[1:4,], overall_ITS_varpart$part$indfract[1:4,])
+WMC_B_varplot_data$variable <- c("Soil Chemistry", "Interaction", "Climate", "Residual", "Soil Chemistry", "Interaction", "Climate", "Residual")
+WMC_B_varplot_data$taxa <- c("Prokaryote", "Prokaryote", "Prokaryote", "Prokaryote", "Fungi", "Fungi", "Fungi", "Fungi")
+WMC_B_varplot_data$horizon <- "B"
+WMC_B_varplot_data$climosequence <- "WM"
+
+broken_up_varparts <- rbind(SSCZO_A_varplot_data, WMC_A_varplot_data, SSCZO_B_varplot_data, WMC_B_varplot_data)
+broken_up_varparts$Adj.R.squared[broken_up_varparts$Adj.R.squared < 0] <- 0
+broken_up_varparts %>%
+  mutate(variable = ordered(variable, c("Residual", "Climate", "Interaction", "Soil Chemistry")),
+         taxa = ordered(taxa, c("Prokaryote", "Fungi"))) %>%
+  ggplot(aes(x = taxa, y = Adj.R.squared*100, fill = variable)) +
+  geom_bar(stat = "identity", position = "stack", col = "black", size = 0.5) +
+  labs(y = "Variation explained (%)", x = NULL) +
+  scale_fill_manual(values = c("gray", "#519DC4", "#6BAD62", "#FFCD39")) +
+  theme(legend.position = "none", strip.text.y = element_text(angle = 0)) +
+  facet_grid(horizon ~ climosequence) +
+  panel_border() -> p_varpart_brokenup
+
+prow <- plot_grid(p_varpart_overall + ggtitle("Overall") + theme(plot.title = element_text(hjust = 0.5)) + guides(fill = guide_legend(ncol = 2)), 
+                  p_varpart_brokenup, ncol = 2, rel_widths = c(1, 1.5))
+
+ggsave("~/Dropbox/DeepSoil_Microbial/Fig2.pdf", height = 4, width = 6.5, units = "in", dpi = 6)
+prow
+dev.off()
+
+broken_up_varparts %>%
+  dplyr::select(`Adj.R.squared`, variable, climosequence, taxa, horizon) %>%
+  spread(key = variable, value = `Adj.R.squared`) %>%
+  mutate(CSI = `Soil Chemistry`/Climate) -> tab # Influence of soil chem increases at depth
+```
+
+# ANCOM-BC by MAT (Differential Abundance)
+```{r}
+# 16S 
+Phylum_16S <- data_16S %>% tax_glom("Phylum") 
+out_16S_phylum <- ancombc(phyloseq = Phylum_16S, formula = "MAT*Horizon + (1|Pit)",
+                          p_adj_method = "holm", zero_cut = 0.90, lib_cut = 1000, tol = 1e-5, 
+                          max_iter = 100, alpha = 0.05)
+res <- out_16S_phylum$res 
+res$diff_abn # Significant interactions
+
+plot_data <- data.frame()
+for(climosequence in levels(as.factor(data_16S@sam_data$Climo))){
+  for(horizon in levels(as.factor(data_16S@sam_data$Horizon))){
+    sub <- data_16S %>% subset_samples(Horizon %in% horizon & Climo %in% climosequence)
+    proteos <- subset_taxa(sub, Class == "D_2__Alphaproteobacteria" |
+                                Class == "D_2__Deltaproteobacteria" |
+                                Class == "D_2__Gammaproteobacteria")
+    colnames(tax_table(proteos))[1] <- "group"
+    tax_table(proteos)[,"group"] <- tax_table(proteos)[,"Class"]
+    proteos_glom <- tax_glom(proteos, taxrank = "group")
+    
+    archaea <- subset_taxa(sub, Kingdom == "D_0__Archaea")
+    colnames(tax_table(archaea))[1] <- "group"
+    archaea_glom <- tax_glom(archaea, taxrank = "group")
+    
+    abundant_non_proteos <- subset_taxa(sub, Phylum == "D_1__Verrucomicrobia" |
+                                             Phylum == "D_1__Chloroflexi"|
+                                             Phylum == "D_1__Planctomycetes"|
+                                             Phylum == "D_1__Nitrospirae" |
+                                             Phylum == "D_1__Gemmatimonadetes" |
+                                             Phylum == "D_1__Bacteroidetes" |
+                                             Phylum == "D_1__Acidobacteria" |
+                                             Phylum == "D_1__Actinobacteria")
+    colnames(tax_table(abundant_non_proteos))[1] <- "group"
+    tax_table(abundant_non_proteos)[,"group"] <- tax_table(abundant_non_proteos)[,"Phylum"]
+    abundant_non_proteos_glom <- tax_glom(abundant_non_proteos, taxrank = "group")
+    
+    ps <- merge_phyloseq(proteos_glom, archaea_glom, abundant_non_proteos_glom)
+    
+    out <- ancombc(phyloseq = ps, formula = "MAT", group = "Pit",
+                   p_adj_method = "holm", zero_cut = 0.90, lib_cut = 1000, tol = 1e-5, 
+                   max_iter = 100, alpha = 0.05)
+    res <- merge(out$res$diff_abn, ps@tax_table, by = 0)
+    taxa_to_keep <- res$Row.names[res$MAT == "TRUE"]
+    allTaxa = taxa_names(ps)
+    allTaxa <- allTaxa[allTaxa %in% taxa_to_keep]
+    ps <- microbiome::transform(ps, "compositional")
+    Dif_abun <- prune_taxa(allTaxa, ps)
+    melt <- psmelt(Dif_abun)
+
+    melt %>%
+      group_by(group) %>% 
+      dplyr::summarise(mean = mean(Abundance)) -> means
+    
+    melt %>%
+      group_by(group, MAT) %>%
+      dplyr::summarise(mean_temp = mean(Abundance)) -> mean_temp
+  
+    tab <- merge(mean_temp, means, by = "group") %>%
+      mutate(new_abundance = (mean_temp-mean)/mean*100,
+             logFold2Change = log2(mean_temp/mean),
+             Climosequence = climosequence,
+             Horizon = horizon)
+    plot_data <- rbind(plot_data, tab)
+  }
+}
+
+plot_data$group <- sapply(strsplit(as.character(plot_data$group), "__"), `[`, 2)
+plot_data %>%
+  mutate(group = ordered(group, c("Archaea", "Alphaproteobacteria", "Deltaproteobacteria", 
+                                    "Gammaproteobacteria", "Acidobacteria",
+                                    "Actinobacteria", "Chloroflexi",
+                                    "Gemmatimonadetes", "Nitrospirae",
+                                    "Verrucomicrobia"))) %>%
+  ggplot(aes(x = MAT, y = mean_temp, color = group)) +
+  geom_smooth(se = F) +
+  scale_x_continuous(breaks = scales::pretty_breaks(4)) +
+  labs(y = "Relative Abundance (%)", x = "MAT (°C)") +
+  facet_grid(Horizon~Climosequence, scales = "free_x")+
+  scale_color_manual(values = c("#ff7f0e", "#0e334d","#1f77b4", "#abd2ed", "yellow",
+                               "#2ca02c", "#9467bd", "#8c564b", "#e377c2", 
+                               "#17becf")) +
+  theme(strip.text.y = element_text(angle = 0)) +
+    panel_border()-> p
+
+plot_data2 <- data.frame()
+for(climosequence in levels(as.factor(data_16S@sam_data$Climo))){
+  for(horizon in levels(as.factor(data_16S@sam_data$Horizon))){
+    sub <- data_16S %>% subset_samples(Horizon %in% horizon & Climo %in% climosequence)
+    proteos <- subset_taxa(sub, Class == "D_2__Alphaproteobacteria" |
+                                Class == "D_2__Deltaproteobacteria" |
+                                Class == "D_2__Gammaproteobacteria")
+    colnames(tax_table(proteos))[1] <- "group"
+    tax_table(proteos)[,"group"] <- tax_table(proteos)[,"Class"]
+    proteos_glom <- tax_glom(proteos, taxrank = "group")
+    
+    archaea <- subset_taxa(sub, Kingdom == "D_0__Archaea")
+    colnames(tax_table(archaea))[1] <- "group"
+    archaea_glom <- tax_glom(archaea, taxrank = "group")
+    
+    abundant_non_proteos <- subset_taxa(sub, Phylum == "D_1__Verrucomicrobia" |
+                                             Phylum == "D_1__Chloroflexi"|
+                                             Phylum == "D_1__Planctomycetes"|
+                                             Phylum == "D_1__Nitrospirae" |
+                                             Phylum == "D_1__Gemmatimonadetes" |
+                                             Phylum == "D_1__Bacteroidetes" |
+                                             Phylum == "D_1__Acidobacteria" |
+                                             Phylum == "D_1__Actinobacteria")
+    colnames(tax_table(abundant_non_proteos))[1] <- "group"
+    tax_table(abundant_non_proteos)[,"group"] <- tax_table(abundant_non_proteos)[,"Phylum"]
+    abundant_non_proteos_glom <- tax_glom(abundant_non_proteos, taxrank = "group")
+    
+    ps <- merge_phyloseq(proteos_glom, archaea_glom, abundant_non_proteos_glom)
+    
+    out <- ancombc(phyloseq = ps, formula = "MAP", group = "Pit",
+                   p_adj_method = "holm", zero_cut = 0.90, lib_cut = 1000, tol = 1e-5, 
+                   max_iter = 100, alpha = 0.05)
+    res <- merge(out$res$diff_abn, ps@tax_table, by = 0)
+    taxa_to_keep <- res$Row.names[res$MAP == "TRUE"]
+    allTaxa = taxa_names(ps)
+    allTaxa <- allTaxa[allTaxa %in% taxa_to_keep]
+    ps <- microbiome::transform(ps, "compositional")
+    Dif_abun <- prune_taxa(allTaxa, ps)
+    melt <- psmelt(Dif_abun)
+
+    melt %>%
+      group_by(group) %>% 
+      dplyr::summarise(mean = mean(Abundance)) -> means
+    
+    melt %>%
+      group_by(group, MAP) %>%
+      dplyr::summarise(mean_precip = mean(Abundance)) -> mean_precip
+  
+    tab <- merge(mean_precip, means, by = "group") %>%
+      mutate(new_abundance = (mean_precip-mean)/mean*100,
+             logFold2Change = log2(mean_precip/mean),
+             Climosequence = climosequence,
+             Horizon = horizon)
+    plot_data2 <- rbind(plot_data2, tab)
+  }
+}
+
+plot_data2$group <- sapply(strsplit(as.character(plot_data2$group), "__"), `[`, 2)
+plot_data2 %>%
+  mutate(group = ordered(group, c("Archaea", "Alphaproteobacteria", "Deltaproteobacteria", 
+                                    "Gammaproteobacteria", "Acidobacteria",
+                                    "Actinobacteria", "Chloroflexi",
+                                    "Gemmatimonadetes", "Nitrospirae", "Planctomycetes", 
+                                    "Verrucomicrobia"))) %>%
+  ggplot(aes(x = MAP, y = mean_precip, color = group)) +
+  geom_smooth(se = F) +
+  scale_x_continuous(breaks = scales::pretty_breaks(4)) +
+  labs(y = "Relative Abundance (%)", x = "MAP (mm)") +
+  facet_grid(Horizon~Climosequence, scales = "free_x")+
+  scale_color_manual(values = c("#ff7f0e", "#0e334d","#1f77b4", "#abd2ed", "yellow",
+                               "#2ca02c", "#9467bd", "#8c564b", "#e377c2", "red",
+                               "#17becf")) +
+  theme(strip.text.y = element_text(angle = 0)) +
+    panel_border()-> p2
+
+prow <- plot_grid(p + theme(legend.position = "none"),
+          p2 + theme(legend.position = "none"),
+          align = "vh",
+          labels = "AUTO")
+leg <- get_legend(p2 + theme(legend.position = "bottom", legend.justification = "center") + guides(color = guide_legend(ncol = 3)))
+prow2 <- plot_grid(prow, leg, ncol = 1, rel_heights = c(1, 0.15))
+
+ggsave("~/Dropbox/DeepSoil_Microbial/Fig3.pdf", height = 7, width = 7, units = "in", dpi = 600)
+prow2
+dev.off()
+
+
+# ITS
+## Class level
+Class_ITS <- data_ITS %>% tax_glom("Class") 
+out_ITS_class <- ancombc(phyloseq = Class_ITS, formula = "MAT*Horizon", 
+                          p_adj_method = "holm", zero_cut = 0.90, lib_cut = 1000, tol = 1e-5, 
+                          max_iter = 100, alpha = 0.05)
+res <- out_ITS_class$res 
+res$diff_abn # Significant interactions
+
+plot_data3 <- data.frame()
+for(climosequence in levels(as.factor(data_ITS@sam_data$Climo))){
+  for(horizon in levels(as.factor(data_ITS@sam_data$Horizon))){
+    sub <- data_ITS %>% subset_samples(Horizon %in% horizon & Climo %in% climosequence)
+    
+    abundant_ITS <- subset_taxa(sub, Class == "c__Agaricomycetes" |
+                                     Class == "c__Leotiomycetes"|
+                                     Class == "c__Dothideomycetes"|
+                                     Class == "c__Pezizomycetes" |
+                                     Class == "c__Geminibasidiomycetes" |
+                                     Class == "c__Mortierellomycetes" |
+                                     Class == "c__Sordariomycetes" |
+                                     Class == "c__Eurotiomycetes" |
+                                     Class == "c__Umbelopsidomycetes")
+    ps <- tax_glom(abundant_ITS, taxrank = "Class")
+    
+    out <- ancombc(phyloseq = ps, formula = "MAT", group = "Pit", 
+                   p_adj_method = "holm", zero_cut = 0.90, lib_cut = 1000, tol = 1e-5, 
+                   max_iter = 100, alpha = 0.05)
+    res <- merge(out$res$diff_abn, ps@tax_table, by = 0)
+    taxa_to_keep <- res$Row.names[res$MAT == "TRUE"]
+    allTaxa = taxa_names(ps)
+    allTaxa <- allTaxa[allTaxa %in% taxa_to_keep]
+    ps <- microbiome::transform(ps, "compositional")
+    Dif_abun <- prune_taxa(allTaxa, ps)
+    melt <- psmelt(Dif_abun)
+
+    melt %>%
+      group_by(Class) %>% 
+      dplyr::summarise(mean = mean(Abundance)) -> means
+    
+    melt %>%
+      group_by(Class, MAT) %>%
+      dplyr::summarise(mean_temp = mean(Abundance)) -> mean_temp
+  
+    tab <- merge(mean_temp, means, by = "Class") %>%
+      mutate(new_abundance = (mean_temp-mean)/mean*100,
+             logFold2Change = log2(mean_temp/mean),
+             Climosequence = climosequence,
+             Horizon = horizon)
+    plot_data3 <- rbind(plot_data3, tab)
+  }
+}
+
+plot_data3$Class <- sapply(strsplit(as.character(plot_data3$Class), "__"), `[`, 2)
+
+plot_data3 %>%
+  mutate(group = ordered(Class, c("Agaricomycetes", "Dothideomycetes",
+                                  "Eurotiomycetes", "Geminibasidiomycetes",
+                                  "Leotiomycetes", "Mortierellomycetes", 
+                                  "Pezizomycetes", "Sordariomycetes",
+                                  "Umbelopsidomycetes", "Rare Taxa"))) %>%
+  ggplot(aes(x = MAT, y = mean_temp, color = Class)) +
+  geom_smooth(se = F) +
+  scale_x_continuous(breaks = scales::pretty_breaks(4)) +
+  labs(y = "Relative abundnace (%)", x = "MAT (°C)") +
+  facet_grid(Horizon~Climosequence, scales = "free_x")+
+  scale_color_manual(values = c("#ff7f0e","#1f77b4",
+                               "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", 
+                                "#17becf", "white")) +
+  theme(strip.text.y = element_text(angle = 0)) +
+    panel_border()-> p3
+
+
+plot_data4 <- data.frame()
+for(climosequence in levels(as.factor(data_ITS@sam_data$Climo))){
+  for(horizon in levels(as.factor(data_ITS@sam_data$Horizon))){
+    sub <- data_ITS %>% subset_samples(Horizon %in% horizon & Climo %in% climosequence)
+    
+    abundant_ITS <- subset_taxa(sub, Class == "c__Agaricomycetes" |
+                                     Class == "c__Leotiomycetes"|
+                                     Class == "c__Dothideomycetes"|
+                                     Class == "c__Pezizomycetes" |
+                                     Class == "c__Geminibasidiomycetes" |
+                                     Class == "c__Mortierellomycetes" |
+                                     Class == "c__Sordariomycetes" |
+                                     Class == "c__Eurotiomycetes" |
+                                     Class == "c__Umbelopsidomycetes")
+    ps <- tax_glom(abundant_ITS, taxrank = "Class")
+    
+    out <- ancombc(phyloseq = ps, formula = "MAP", group = "Pit", 
+                   p_adj_method = "holm", zero_cut = 0.90, lib_cut = 1000, tol = 1e-5, 
+                   max_iter = 100, alpha = 0.05)
+    res <- merge(out$res$diff_abn, ps@tax_table, by = 0)
+    taxa_to_keep <- res$Row.names[res$MAP == "TRUE"]
+    allTaxa = taxa_names(ps)
+    allTaxa <- allTaxa[allTaxa %in% taxa_to_keep]
+    ps <- microbiome::transform(ps, "compositional")
+    Dif_abun <- prune_taxa(allTaxa, ps)
+    melt <- psmelt(Dif_abun)
+
+    melt %>%
+      group_by(Class) %>% 
+      dplyr::summarise(mean = mean(Abundance)) -> means
+    
+    melt %>%
+      group_by(Class, MAP) %>%
+      dplyr::summarise(mean_precip = mean(Abundance)) -> mean_precip
+  
+    tab <- merge(mean_precip, means, by = "Class") %>%
+      mutate(new_abundance = (mean_precip-mean)/mean*100,
+             logFold2Change = log2(mean_precip/mean),
+             Climosequence = climosequence,
+             Horizon = horizon)
+    plot_data4 <- rbind(plot_data4, tab)
+  }
+}
+
+plot_data4$Class <- sapply(strsplit(as.character(plot_data4$Class), "__"), `[`, 2)
+
+plot_data4 %>%
+  mutate(group = ordered(Class, c("Agaricomycetes", "Dothideomycetes",
+                                  "Eurotiomycetes", "Geminibasidiomycetes",
+                                  "Leotiomycetes", "Mortierellomycetes", 
+                                  "Pezizomycetes", "Sordariomycetes",
+                                  "Umbelopsidomycetes", "Rare Taxa"))) %>%
+  ggplot(aes(x = MAP, y = mean_precip, color = Class)) +
+  geom_smooth(se = F) +
+  labs(y = "Relative abundnace (%)", x = "MAP (mm)") +
+  scale_x_continuous(breaks = scales::pretty_breaks(4)) +
+  facet_grid(Horizon~Climosequence, scales = "free_x")+
+  scale_color_manual(values = c("#ff7f0e","#1f77b4",
+                               "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", 
+                                "#17becf", "white")) +
+  theme(strip.text.y = element_text(angle = 0)) +
+    panel_border()-> p4
+
+
+prow <- plot_grid(p3 + theme(legend.position = "none"),
+          p4 + theme(legend.position = "none"),
+          align = "vh",
+          labels = "AUTO")
+leg <- get_legend(p4 + theme(legend.position = "bottom", legend.justification = "center") + guides(color = guide_legend(ncol = 3)))
+prow2 <- plot_grid(prow, leg, ncol = 1, rel_heights = c(1, 0.15))
+
+ggsave("~/Dropbox/DeepSoil_Microbial/Fig4.pdf", height = 7, width = 7, units = "in", dpi = 600)
+prow2
+dev.off()
+```
+
+# ANCOM by Depth
+```{r}
+# 16S 
+Phylum_16S <- data_16S %>% tax_glom("Phylum") 
+out_16S_phylum <- ancombc(phyloseq = Phylum_16S, formula = "Depth*Site", 
+                          p_adj_method = "holm", zero_cut = 0.90, lib_cut = 1000, tol = 1e-5, 
+                          max_iter = 100, alpha = 0.05)
+res <- out_16S_phylum$res 
+res$diff_abn # Significant interactions
+
+plot_data2 <- data.frame()
+for(site in levels(as.factor(data_16S@sam_data$Site))){
+  sub <- data_16S %>% subset_samples(Site %in% site)
+  proteos <- subset_taxa(sub, Class == "D_2__Alphaproteobacteria" |
+                                Class == "D_2__Deltaproteobacteria" |
+                                Class == "D_2__Gammaproteobacteria")
+  colnames(tax_table(proteos))[1] <- "group"
+  tax_table(proteos)[,"group"] <- tax_table(proteos)[,"Class"]
+  proteos_glom <- tax_glom(proteos, taxrank = "group")
+  
+  archaea <- subset_taxa(sub, Kingdom == "D_0__Archaea")
+  colnames(tax_table(archaea))[1] <- "group"
+  archaea_glom <- tax_glom(archaea, taxrank = "group")
+  
+  abundant_non_proteos <- subset_taxa(sub, Phylum == "D_1__Verrucomicrobia" |
+                                           Phylum == "D_1__Chloroflexi"|
+                                           Phylum == "D_1__Planctomycetes"|
+                                           Phylum == "D_1__Nitrospirae" |
+                                           Phylum == "D_1__Gemmatimonadetes" |
+                                           Phylum == "D_1__Bacteroidetes" |
+                                           Phylum == "D_1__Acidobacteria" |
+                                           Phylum == "D_1__Actinobacteria")
+  colnames(tax_table(abundant_non_proteos))[1] <- "group"
+  tax_table(abundant_non_proteos)[,"group"] <- tax_table(abundant_non_proteos)[,"Phylum"]
+  abundant_non_proteos_glom <- tax_glom(abundant_non_proteos, taxrank = "group")
+  
+  ps <- merge_phyloseq(proteos_glom, archaea_glom, abundant_non_proteos_glom)
+  out <- ancombc(phyloseq = ps, formula = "Depth", 
+                 p_adj_method = "holm", zero_cut = 0.90, lib_cut = 1000, tol = 1e-5, 
+                 max_iter = 100, alpha = 0.05)
+  res <- merge(out$res$diff_abn, ps@tax_table, by = 0)
+  taxa_to_keep <- res$Row.names[res$Depth == "TRUE"]
+  
+  if(length(taxa_to_keep) > 0){
+    allTaxa = taxa_names(ps)
+    allTaxa <- allTaxa[allTaxa %in% taxa_to_keep]
+    ps <- microbiome::transform(ps, "compositional")
+    Dif_abun <- prune_taxa(allTaxa, ps)
+    melt <- psmelt(Dif_abun)
+
+    melt %>%
+      group_by(group) %>% 
+      dplyr::summarise(mean = mean(Abundance)) -> means
+    
+    melt %>%
+      group_by(group, Depth) %>%
+      dplyr::summarise(mean_temp = mean(Abundance)) -> mean_temp
+  
+    tab <- merge(mean_temp, means, by = "group") %>%
+      mutate(new_abundance = (mean_temp-mean)/mean*100,
+             logFold2Change = log2(mean_temp/mean),
+             Site = site)
+  }
+  else{
+  print(site)
+  print("not working")}
+  plot_data2 <- rbind(plot_data2, tab)
+}
+
+Horizons <- data.frame(Site = c("SJER", "SJER", "SPR", "PROV", "SH", "SH",
+                                "GR2", "GR2", "GR3", "GR3", "GR5", "GR5", "BAR", "BAR"),
+                       y = c(25, 89, 33, 26, 11.5, 71, 11, 24, 11, 33, 7, 32, 10, 105))
+Horizons$Site <- ordered(Horizons$Site, c("SJER", "SPR", "PROV", "SH", "GR2", "GR3", "GR5", "BAR"))
+
+plot_data2$group <- sapply(strsplit(as.character(plot_data2$group), "__"), `[`, 2)
+plot_data2 %>%
+  mutate(group = ordered(group, c("Archaea", "Alphaproteobacteria", "Deltaproteobacteria", 
+                                    "Gammaproteobacteria", "Acidobacteria",
+                                    "Actinobacteria", "Bacteroidetes", "Chloroflexi",
+                                    "Gemmatimonadetes", "Nitrospirae", "Planctomycetes",
+                                    "Verrucomicrobia")),
+         Site = dplyr::recode(Site, SJE = "SJER", PR = "PROV"),
+         Site = ordered(Site, c("SJER", "SPR", "PROV", "SH", "GR2", "GR3", "GR5", "BAR"))) %>%
+  ggplot(aes(x = Depth, y = mean_temp*100, color = group)) +
+  geom_smooth(se = F) +
+  geom_vline(data = Horizons, aes(xintercept = y), linetype = "dashed") +
+  labs(y = "Relative Abundance (%)", x = "Depth (cm)") +
+  facet_wrap(~Site, ncol = 4, scales = "free_x")+
+  scale_x_reverse() +
+  scale_y_continuous(breaks = scales::pretty_breaks(3)) +
+  scale_color_manual(values = c("#ff7f0e", "#0e334d","#1f77b4", "#abd2ed",
+                               "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", 
+                               "#7f7f7f", "#17becf")) +
+  coord_flip() +
+  panel_border() +
+  theme(axis.text = element_text(size = 8), legend.text = element_text(size = 8), strip.text = element_text(size = 10), axis.title = element_text(size = 10)) -> p3
+
+# ITS
+## Class level
+Class_ITS <- data_ITS %>% tax_glom("Class") 
+out_ITS_class <- ancombc(phyloseq = Class_ITS, formula = "Depth*Site", 
+                          p_adj_method = "holm", zero_cut = 0.90, lib_cut = 1000, tol = 1e-5, 
+                          max_iter = 100, alpha = 0.05)
+res <- out_ITS_class$res 
+res$diff_abn # Significant interactions
+
+plot_data3 <- data.frame()
+for(site in levels(as.factor(data_ITS@sam_data$Site))){
+  sub <- data_ITS %>% subset_samples(Site %in% site)
+    
+  abundant_ITS <- subset_taxa(sub, Class == "c__Agaricomycetes" |
+                                   Class == "c__Leotiomycetes"|
+                                   Class == "c__Dothideomycetes"|
+                                   Class == "c__Pezizomycetes" |
+                                   Class == "c__Geminibasidiomycetes" |
+                                   Class == "c__Mortierellomycetes" |
+                                   Class == "c__Sordariomycetes" |
+                                   Class == "c__Eurotiomycetes" |
+                                   Class == "c__Umbelopsidomycetes")
+  ps <- tax_glom(abundant_ITS, taxrank = "Class")
+  
+  out <- ancombc(phyloseq = ps, formula = "Depth", 
+                 p_adj_method = "holm", zero_cut = 0.90, lib_cut = 1000, tol = 1e-5, 
+                 max_iter = 100, alpha = 0.05)
+  res <- merge(out$res$diff_abn, ps@tax_table, by = 0)
+  taxa_to_keep <- res$Row.names[res$Depth == "TRUE"]
+  allTaxa = taxa_names(ps)
+  allTaxa <- allTaxa[allTaxa %in% taxa_to_keep]
+  ps <- microbiome::transform(ps, "compositional")
+  Dif_abun <- prune_taxa(allTaxa, ps)
+  melt <- psmelt(Dif_abun)
+
+  melt %>%
+    group_by(Class) %>% 
+    dplyr::summarise(mean = mean(Abundance)) -> means
+  
+  melt %>%
+    group_by(Class, Depth) %>%
+    dplyr::summarise(mean_temp = mean(Abundance)) -> mean_temp
+
+  tab <- merge(mean_temp, means, by = "Class") %>%
+    mutate(new_abundance = (mean_temp-mean)/mean*100,
+           logFold2Change = log2(mean_temp/mean),
+           Site = site)
+  plot_data3 <- rbind(plot_data3, tab)
+}
+
+plot_data3$Class <- sapply(strsplit(as.character(plot_data3$Class), "__"), `[`, 2)
+
+dummy <- data.frame(Class = "A", Depth = 50, mean_temp = 0.12, mean = 0.1, new_abundance = 0.1, logFold2Change = 0.1, Site = "SPR")
+dummy$Site <- ordered(dummy$Site, c("SJER", "SPR", "PROV", "SH", "GR2", "GR3", "GR5", "BAR"))
+
+Horizons <- data.frame(Site = c("SJER", "SJER", "SPR", "PROV", "SH", "SH",
+                                "GR2", "GR2", "GR3", "GR3", "GR5", "GR5", "BAR", "BAR"),
+                       y = c(25, 89, 33, 26, 11.5, 71, 11, 24, 11, 33, 7, 32, 10, 105))
+Horizons$Site <- ordered(Horizons$Site, c("SJER", "SPR", "PROV", "SH", "GR2", "GR3", "GR5", "BAR"))
+
+plot_data3 %>%
+  mutate(group = ordered(Class, c("Agaricomycetes", "Dothideomycetes",
+                                  "Eurotiomycetes", "Geminibasidiomycetes",
+                                  "Leotiomycetes", "Mortierellomycetes", 
+                                  "Pezizomycetes", "Sordariomycetes",
+                                  "Umbelopsidomycetes", "Rare Taxa")),
+         Site = dplyr::recode(Site, SJE = "SJER", PR = "PROV"),
+         Site = ordered(Site, c("SJER", "SPR", "PROV", "SH", "GR2", "GR3", "GR5", "BAR"))) %>%
+  ggplot(aes(x = Depth, y = mean_temp*100, color = group)) +
+  geom_point(data = dummy, aes(x = Depth, y = mean_temp), alpha = 0, inherit.aes = F) +
+  geom_smooth(se = F) +
+  geom_vline(data = Horizons, aes(xintercept = y), linetype = "dashed") +
+  labs(y = "Relative Abundance (%)", x = "Depth (cm)") +
+  facet_wrap(~Site, ncol = 4, scales = "free_x")+
+  scale_x_reverse() +
+  scale_y_continuous(breaks = scales::pretty_breaks(3)) +
+  scale_color_manual(values = c("#ff7f0e","#1f77b4",
+                               "#2ca02c", "#d62728", "#8c564b", "#e377c2", 
+                                "#17becf", "white")) +
+  coord_flip() +
+  panel_border() +
+  theme(axis.text = element_text(size = 8), legend.text = element_text(size = 8), strip.text = element_text(size = 10), axis.title = element_text(size = 10)) -> p4
+
+prow <- plot_grid(p3, p4, ncol = 1, align = "vh", labels = "AUTO")
+
+ggsave("~/Dropbox/DeepSoil_Microbial/FigS3.pdf", height = 7, width = 7, units = "in", dpi = 600)
+prow
+dev.off()
+
+```
+
+#FUNGuild analysis
+```{r}
+#fg <- parse_funguild() #Accessed 2/25/21
+#data_ITS_tax <- as.data.frame(as(tax_table(data_ITS), "matrix"))
+#data_ITS_tax$Genus <- sapply(strsplit(as.character(data_ITS_tax$Genus), "__"), `[`, 2)
+#data_ITS_tax$OTU <- rownames(data_ITS_tax)
+#data_ITS_tax_fg <- merge(data_ITS_tax, 
+#                         fg %>% filter(taxonomicLevel == "Genus"), 
+#                         by.x = "Genus", by.y = "taxon", all.x = T)
+#data_ITS_tax_fg$guild[str_detect(data_ITS_tax_fg$guild, "Ectomycorrhizal") == TRUE] <- "Ectomycorrhizal"
+#data_ITS_tax_fg$guild[data_ITS_tax_fg$Phylum == "p__Glomeromycota"] <- "Arbuscular Mycorrhizal"
+#data_ITS_tax_fg$guild[str_detect(data_ITS_tax_fg$guild, "athogen") == TRUE] <- "Pathogen"
+#data_ITS_tax_fg$guild[str_detect(data_ITS_tax_fg$guild, "Saprotroph") == TRUE] <- "Saprotroph"
+#
+#write.csv(data_ITS_tax_fg, "~/Dropbox/DeepSoil_Microbial/FUNGuild_tax_table.csv")
+data_ITS_tax_fg <- read.csv("~/Dropbox/DeepSoil_Microbial/FUNGuild_tax_table.csv")
+
+TAX <- tax_table(data_ITS_tax_fg %>% dplyr::select("guild", "Phylum", "Class", "Order", "Family", "Genus", "Species", "OTU", "confidenceRanking"))
+
+taxa_names(TAX) <- data_ITS_tax_fg$OTU
+data_ITS_fg <- merge_phyloseq(otu_table(data_ITS), TAX, data_ITS@sam_data)
+data_ITS_fg_glom <- tax_glom(data_ITS_fg, "ta1")
+
+data_ITS_fg_tss <- transform_sample_counts(data_ITS_fg_glom, function(x) x/sum(x))
+myco <- data_ITS_fg_tss %>% subset_taxa(ta1 == "Ectomycorrhizal" | ta1 == "Arbuscular Mycorrhizal")
+mycomelt <- psmelt(myco)
+
+em <- filter(mycomelt, ta1 == "Ectomycorrhizal")
+
+y.transf.betareg <- function(y){
+  n.obs <- sum(!is.na(y))
+  (y * (n.obs - 1) + 0.5) / n.obs
+}
+x <- betareg(y.transf.betareg(Abundance) ~ Site*as.numeric(Depth), em)
+summary(x)
+joint_tests(x)  # Interaction
+
+for(i in levels(as.factor(em$Site))){
+  sub <- subset(em, Site %in% i)
+  x <- betareg(y.transf.betareg(Abundance) ~ as.numeric(Depth), sub)
+  print(i)
+  print(summary(x))  
+}# Increase with depth only at SH
+
+
+x <- betareg(y.transf.betareg(Abundance) ~ Site, em %>% filter(Horizon == "A"))
+joint_tests(x)
+marginal <- lsmeans(x, "Site")
+cld(marginal, alpha = 0.05, adjust = "Tukey") 
+
+x <- betareg(y.transf.betareg(Abundance) ~ Site, em %>% filter(Horizon == "B"))
+joint_tests(x)
+marginal <- lsmeans(x, "Site")
+cld(marginal, alpha = 0.05, adjust = "Tukey") 
+
+x <- betareg(y.transf.betareg(Abundance) ~ Site, em %>% filter(Horizon == "C"))
+joint_tests(x)
+marginal <- lsmeans(x, "Site")
+cld(marginal, alpha = 0.05, adjust = "Tukey") 
+
+letters <- data.frame(letter = c("bcd", "ab", "a", "abc", "d", "abcd", "d", "cd",
+                                 "b", "a", "a", "a", "b", "a", "b", "b",
+                                 "abc", "", "ab", "a", "c", "abc", "c", "bc"),
+                      x = rep(1:8, 3),
+                      y = rep(110, 24),
+                      Horizon = c(rep("A", 8), rep("B", 8), rep("C", 8)))
+
+plotdata1 <- mycomelt %>% filter(ta1 == "Ectomycorrhizal") %>%
+  mutate(Site = dplyr::recode(Site, SJE = "SJER", PR = "PROV"),
+         Site = ordered(Site, c("SJER", "SPR", "PROV", "SH", "GR2", "GR3", "GR5", "BAR"))) 
+plotdata1 %>%
+  group_by(Horizon, Site) %>%
+  dplyr::summarise(mean = mean(Abundance*100), se = sd(Abundance*100)/sqrt(n())) %>%
+  ggplot(aes(x = Site, y = mean, fill = Site)) +
+  geom_bar(stat = "identity") +
+  scale_fill_brewer(type = "qual", guide = F) +
+  labs(x = NULL, y = "Relative abundance (%)") +
+  geom_jitter(data = plotdata1, aes(x = Site, y = Abundance*100, fill = Site), pch = 21, inherit.aes = F ) +
+  geom_errorbar(aes(ymin = mean - se, ymax = mean + se), width = 0.2) +
+  geom_text(data = letters, aes(x = x, y = y, label = letter), inherit.aes = F) +
+  scale_y_continuous(breaks = c(0, 25, 50, 75, 100)) +
+  facet_wrap(~Horizon, ncol = 1) -> p
+
+
+am <- filter(mycomelt, ta1 == "Arbuscular Mycorrhizal")
+
+x <- betareg(y.transf.betareg(Abundance) ~ Site*as.numeric(Depth), am)
+summary(x)
+joint_tests(x)  # Interaction
+
+for(i in levels(as.factor(am$Site))){
+  sub <- subset(am, Site %in% i)
+  x <- betareg(y.transf.betareg(Abundance) ~ as.numeric(Depth), sub)
+  print(i)
+  print(summary(x))  
+}# Decrease
+
+
+x <- betareg(y.transf.betareg(Abundance) ~ Site, am %>% filter(Horizon == "A"))
+joint_tests(x)
+marginal <- lsmeans(x, "Site")
+cld(marginal, alpha = 0.05, adjust = "Tukey") 
+
+x <- betareg(y.transf.betareg(Abundance) ~ Site, am %>% filter(Horizon == "B"))
+joint_tests(x)
+marginal <- lsmeans(x, "Site")
+cld(marginal, alpha = 0.05, adjust = "Tukey") 
+
+x <- betareg(y.transf.betareg(Abundance) ~ Site, am %>% filter(Horizon == "C"))
+joint_tests(x)
+marginal <- lsmeans(x, "Site")
+cld(marginal, alpha = 0.05, adjust = "Tukey") 
+
+letters <- data.frame(letter = c("abc", "c", "bc", "c", "a", "bc", "ab", "abc",
+                                 "ab", "b", "b", "b", "ab", "b", "a", "b",
+                                 "", "", "", "", "", "", "", ""),
+                      x = rep(1:8, 3),
+                      y = rep(25, 24),
+                      Horizon = c(rep("A", 8), rep("B", 8), rep("C", 8)))
+
+
+plotdata1 <- mycomelt %>% filter(ta1 == "Arbuscular Mycorrhizal") %>%
+  mutate(Site = dplyr::recode(Site, SJE = "SJER", PR = "PROV"),
+         Site = ordered(Site, c("SJER", "SPR", "PROV", "SH", "GR2", "GR3", "GR5", "BAR"))) 
+plotdata1 %>%
+  group_by(Horizon, Site) %>%
+  dplyr::summarise(mean = mean(Abundance*100), se = sd(Abundance*100)/sqrt(n())) %>%
+  ggplot(aes(x = Site, y = mean, fill = Site)) +
+  geom_bar(stat = "identity") +
+  scale_fill_brewer(type = "qual", guide = F) +
+  labs(x = NULL, y = "Relative abundance (%)") +
+  geom_jitter(data = plotdata1, aes(x = Site, y = Abundance*100, fill = Site), pch = 21, inherit.aes = F ) +
+  geom_errorbar(aes(ymin = mean - se, ymax = mean + se), width = 0.2) +
+  geom_text(data = letters, aes(x = x, y = y, label = letter), inherit.aes = F) +
+  facet_wrap(~Horizon, ncol = 1) -> p1
+
+prow <- plot_grid(p + theme(axis.text.x = element_text(size = 8.5)), 
+                  p1 + theme(axis.text.x = element_text(size = 8.5)), 
+                  ncol = 2, align = "vh", labels = "AUTO")
+
+ggsave("~/Dropbox/DeepSoil_Microbial/FigS4.pdf", width = 7, height = 6, units = "in", dpi = 600)
+prow
+dev.off()
+
+
+out_funguild <- ancombc(phyloseq = data_ITS_fg_glom, formula = "MAT*Horizon", 
+                          p_adj_method = "holm", zero_cut = 0.90, lib_cut = 1000, tol = 1e-5, 
+                          max_iter = 100, alpha = 0.05)
+res <- out_funguild$res 
+res$diff_abn 
+
+plot_data4 <- data.frame()
+for(climosequence in levels(as.factor(data_ITS_fg_glom@sam_data$Climo))){
+  for(horizon in levels(as.factor(data_ITS_fg_glom@sam_data$Horizon))){
+    ps <- data_ITS_fg_glom %>% subset_samples(Horizon %in% horizon & Climo %in% climosequence)
+    out <- ancombc(phyloseq = ps, formula = "MAT", 
+                   p_adj_method = "holm", zero_cut = 0.90, lib_cut = 1000, tol = 1e-5, 
+                   max_iter = 100, alpha = 0.05)
+    res <- merge(out$res$diff_abn, ps@tax_table, by = 0)
+    taxa_to_keep <- res$Row.names[res$MAT == "TRUE"]
+    if(length(taxa_to_keep > 0)){
+      allTaxa = taxa_names(ps)
+      allTaxa <- allTaxa[allTaxa %in% taxa_to_keep]
+      ps <- microbiome::transform(ps, "compositional")
+      Dif_abun <- prune_taxa(allTaxa, ps)
+      melt <- psmelt(Dif_abun)
+  
+      melt %>%
+        group_by(ta1) %>% 
+        dplyr::summarise(mean = mean(Abundance)) -> means
+      
+      melt %>%
+        group_by(ta1, MAT) %>%
+        dplyr::summarise(mean_temp = mean(Abundance)) -> mean_temp
+    
+      tab <- merge(mean_temp, means, by = "ta1") %>%
+        mutate(new_abundance = (mean_temp-mean)/mean*100,
+               logFold2Change = log2(mean_temp/mean),
+               Climosequence = climosequence,
+               Horizon = horizon)}
+    else{
+      tab <- data.frame(Climosequence = climosequence,
+                        Horizon = horizon,
+                        mean_temp = 1,
+                        mean = 1,
+                        new_abundance = 1,
+                        logFold2Change = 1,
+                        ta1 = NA,
+                        MAT = 5)
+        }
+    plot_data4 <- rbind(plot_data4, tab)
+  }
+}
+
+plot_data4 %>%
+  ggplot(aes(x = MAT, y = mean_temp, color = ta1)) +
+  geom_smooth(se = F) +
+  labs(y = "Relative abundnace (%)", x = "MAT (°C)") +
+  facet_grid(Horizon~Climosequence, scales = "free_x")+
+  panel_border()-> p4
+
+
+data_ITS_fg_tss <- transform_sample_counts(data_ITS_fg, function(x) x/sum(x))
+
+data_ITS_EM   <- subset_taxa(data_ITS_fg, ta11 == "Ectomycorrhizal")
+data_ITS_AM   <- subset_taxa(data_ITS_fg, ta11 == "Arbuscular Mycorrhizal")
+```
+
+# Enzymes
+```{r}
+data <- read.csv("~/Dropbox/DeepSoil_Microbial/MASTER_METADATA.csv")
+# Enzyme.corr is umol/kg, enzyme.MBC is mol/mol MBC, enzyme SOC is mol/mol SOC
+
+## Plots --------------------------
+
+data %>%
+  dplyr::select(BG.corr, NAG.corr, AP.corr, Site, Depth) %>%
+  gather(key = "Enzyme", value = "activity", -Site, -Depth) %>%
+  mutate(Site = dplyr::recode(Site, PR = "PROV"),
+         Site = ordered(Site, c("SJER", "SPR", "PROV", "SH", "GR2", "GR3", "GR5", "BAR")),
+         Enzyme = dplyr::recode(Enzyme, BG.corr = "BG", NAG.corr = "NAG", AP.corr = "AP"),
+         Enzyme = ordered(Enzyme, c("BG", "NAG", "AP"))) %>%
+  ggplot(aes(x = Depth, y = activity, fill = Site)) +
+  geom_point(col = "black", pch = 21, size = 2) +
+  scale_fill_brewer(type = "qual") +
+  coord_flip()+
+  scale_x_reverse(name = "Depth (cm)") +
+  scale_y_continuous(name = bquote("Activity ("*mu*"mol"~kg^-1*h^-1*")"))  +
+  facet_wrap(~Enzyme, ncol = 1) +
+  panel_border() -> p
+
+data %>%
+  dplyr::select(BG.MBC, NAG.MBC, AP.MBC, Site, Depth) %>%
+  gather(key = "Enzyme", value = "activity", -Site, -Depth) %>%
+  mutate(Site = dplyr::recode(Site, PR = "PROV"),
+         Site = ordered(Site, c("SJER", "SPR", "PROV", "SH", "GR2", "GR3", "GR5", "BAR")),
+         Enzyme = dplyr::recode(Enzyme, BG.MBC = "BG", NAG.MBC = "NAG", AP.MBC = "AP"),
+         Enzyme = ordered(Enzyme, c("BG", "NAG", "AP"))) %>%
+  ggplot(aes(x = Depth, y = activity*1000, fill = Site)) +
+  geom_point(col = "black", pch = 21, size = 2) +
+  scale_fill_brewer(type = "qual") +
+  coord_flip()+
+  scale_x_reverse(name = "Depth (cm)") +
+  scale_y_continuous(name = bquote("Activity ("*mu*"mol"~mol^-1*" MBC"~h^-1*")"))  +
+  facet_wrap(~Enzyme, ncol = 1) +
+  panel_border() -> p_MBC
+
+data %>%
+  dplyr::select(BG.SOC, NAG.SOC, AP.SOC, Site, Depth) %>%
+  gather(key = "Enzyme", value = "activity", -Site, -Depth) %>%
+  mutate(Site = dplyr::recode(Site, PR = "PROV"),
+         Site = ordered(Site, c("SJER", "SPR", "PROV", "SH", "GR2", "GR3", "GR5", "BAR")),
+         Enzyme = dplyr::recode(Enzyme, BG.SOC = "BG", NAG.SOC = "NAG", AP.SOC = "AP"),
+         Enzyme = ordered(Enzyme, c("BG", "NAG", "AP"))) %>%
+  ggplot(aes(x = Depth, y = activity*1000, fill = Site)) +
+  geom_point(col = "black", pch = 21, size = 2) +
+  scale_fill_brewer(type = "qual") +
+  coord_flip()+
+  scale_x_reverse(name = "Depth (cm)") +
+  scale_y_continuous(name = bquote("Activity ("*mu*"mol"~mol^-1*" SOC"~h^-1*")"))  +
+  facet_wrap(~Enzyme, ncol = 1) +
+  panel_border() -> p_SOC
+
+prow <- plot_grid(p + theme(legend.position = "none", axis.title.x = element_text(size = 10)),
+                  p_MBC + theme(legend.position = "none", axis.title.x = element_text(size = 10)),
+                  p_SOC + theme(legend.position = "none", axis.title.x = element_text(size = 10)),
+                  align = "vh", labels = "AUTO", ncol = 3)
+leg <- get_legend(p + theme(legend.position = "bottom", legend.justification = "center"))
+prow2 <- plot_grid(prow, leg, rel_heights = c(1, 0.1), ncol = 1)
+
+ggsave("~/Dropbox/DeepSoil_Microbial/FigS5.pdf", width = 7, height = 7, units = "in", dpi = 600)
+prow2
+dev.off()
+
+
+data %>%
+  filter(Horizon != "O") %>%
+  dplyr::select(BG.MBC, NAG.MBC, AP.MBC, Site, Horizon) %>%
+  gather(key = "Enzyme", value = "activity", -Site, -Horizon) %>%
+  mutate(Site = dplyr::recode(Site, PR = "PROV"),
+         Site = ordered(Site, c("SJER", "SPR", "PROV", "SH", "GR2", "GR3", "GR5", "BAR")),
+         Enzyme = dplyr::recode(Enzyme, BG.MBC = "BG", NAG.MBC = "NAG", AP.MBC = "AP"),
+         Enzyme = ordered(Enzyme, c("BG", "NAG", "AP"))) %>%
+  ggplot(aes(x = Site, y = activity*1000, fill = Site)) +
+  geom_boxplot(outlier.alpha = 0) +
+  geom_jitter(col = "black", pch = 21, size = 1, alpha = 0.5) +
+  scale_fill_brewer(type = "qual") +
+  scale_y_continuous(name = bquote("Activity ("*mu*"mol"~mol^-1*" MBC"~h^-1*")"))  +
+  scale_x_discrete(name = NULL) +
+  facet_grid(Horizon~Enzyme) +
+  panel_border() +
+  theme(strip.text.y = element_text(angle = 0),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none") -> p
+
+ggsave("~/Dropbox/DeepSoil_Microbial/FigS7.pdf", width = 7, height = 7, units = "in", dpi = 600)
+p
+dev.off()
+
+data %>%
+  filter(Horizon != "O") %>%
+  dplyr::select(BG.SOC, NAG.SOC, AP.SOC, Site, Horizon) %>%
+  gather(key = "Enzyme", value = "activity", -Site, -Horizon) %>%
+  mutate(Site = dplyr::recode(Site, PR = "PROV"),
+         Site = ordered(Site, c("SJER", "SPR", "PROV", "SH", "GR2", "GR3", "GR5", "BAR")),
+         Enzyme = dplyr::recode(Enzyme, BG.SOC = "BG", NAG.SOC = "NAG", AP.SOC = "AP"),
+         Enzyme = ordered(Enzyme, c("BG", "NAG", "AP"))) %>%
+  ggplot(aes(x = Site, y = activity*1000, fill = Site)) +
+  geom_boxplot(outlier.alpha = 0) +
+  geom_jitter(col = "black", pch = 21, size = 1, alpha = 0.5) +
+  scale_fill_brewer(type = "qual") +
+  scale_y_continuous(name = bquote("Activity ("*mu*"mol"~mol^-1*" SOC"~h^-1*")"))  +
+  scale_x_discrete(name = NULL) +
+  facet_grid(Horizon~Enzyme) +
+  panel_border() +
+  theme(strip.text.y = element_text(angle = 0),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none") -> p
+
+ggsave("~/Dropbox/DeepSoil_Microbial/FigS8.pdf", width = 7, height = 7, units = "in", dpi = 600)
+p
+dev.off()
+
+# Stats (mixed effects model) -----------------------------
+#BG
+
+a <- lmer(log10(BG.corr) ~ Depth + (1|Pit), data = data %>% filter(BG.corr > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value)))
+AIC(a)
+r.squaredGLMM(a)
+a <- lmer(log10(BG.corr) ~ MAT*Depth + (1|Pit), data = data %>% filter(BG.corr > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value))) # depth effect and interaction (at higher temperatures there is less of a neg. depth effect)
+r.squaredGLMM(a)
+a <- lmer(log10(BG.corr) ~ MAP*Depth + (1|Pit), data = data %>% filter(BG.corr > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value))) # nothing sig.
+r.squaredGLMM(a)
+a <- lmer(log10(BG.corr) ~ MAP*Depth + Depth*MAT + (1|Pit), data = data %>% filter(BG.corr > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value)))
+r.squaredGLMM(a)
+
+# NAG
+a <- lmer(log10(NAG.corr) ~ Depth + (1|Pit), data = data %>% filter(NAG.corr > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value)))
+AIC(a)
+r.squaredGLMM(a)
+a <- lmer(log10(NAG.corr) ~ MAT*Depth + (1|Pit), data = data %>% filter(NAG.corr > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value))) # depth effect and interaction (at higher temperatures there is less of a neg. depth effect)
+r.squaredGLMM(a)
+a <- lmer(log10(NAG.corr) ~ MAP*Depth + (1|Pit), data = data %>% filter(NAG.corr > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value))) # nothing sig.
+r.squaredGLMM(a)
+a <- lmer(log10(NAG.corr) ~ MAP*Depth + Depth*MAT + (1|Pit), data = data %>% filter(NAG.corr > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value)))
+r.squaredGLMM(a)
+
+# AP
+a <- lmer(log10(AP.corr) ~ Depth + (1|Pit), data = data %>% filter(AP.corr > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value)))
+AIC(a)
+r.squaredGLMM(a)
+a <- lmer(log10(AP.corr) ~ MAT*Depth + (1|Pit), data = data %>% filter(AP.corr > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value))) # depth effect and interaction (at higher temperatures there is less of a neg. depth effect)
+r.squaredGLMM(a)
+a <- lmer(log10(AP.corr) ~ MAP*Depth + (1|Pit), data = data %>% filter(AP.corr > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value))) # nothing sig.
+r.squaredGLMM(a)
+a <- lmer(log10(AP.corr) ~ MAP*Depth + Depth*MAT + (1|Pit), data = data %>% filter(AP.corr > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value)))
+r.squaredGLMM(a)
+
+# BG
+data$x <- data$BG.MBC*1000
+a <- lmer(log10(x) ~ Depth + (1|Pit), data = data %>% filter(BG.MBC > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value)))
+AIC(a)
+a <- lmer(log10(BG.MBC) ~ MAT*Depth + (1|Pit), data = data %>% filter(BG.MBC > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value))) # depth effect and interaction (at higher temperatures there is less of a neg. depth effect)
+a <- lmer(log10(BG.MBC) ~ MAP*Depth + (1|Pit), data = data %>% filter(BG.MBC > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value))) # nothing sig.
+a <- lmer(log10(BG.MBC) ~ MAP*Depth + Depth*MAT + (1|Pit), data = data %>% filter(BG.MBC > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value)))
+
+# NAG
+a <- lmer(log10(NAG.MBC) ~ Depth + (1|Pit), data = data %>% filter(NAG.MBC > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value)))
+AIC(a)
+a <- lmer(log10(NAG.MBC) ~ MAT*Depth + (1|Pit), data = data %>% filter(NAG.MBC > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value))) # depth effect and interaction (at higher temperatures there is less of a neg. depth effect)
+a <- lmer(log10(NAG.MBC) ~ MAP*Depth + (1|Pit), data = data %>% filter(NAG.MBC > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value))) # nothing sig.
+a <- lmer(log10(NAG.MBC) ~ MAP*Depth + Depth*MAT + (1|Pit), data = data %>% filter(NAG.MBC > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value)))
+
+# AP
+a <- lmer(log10(AP.MBC) ~ Depth + (1|Pit), data = data %>% filter(AP.MBC > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value)))
+AIC(a)
+a <- lmer(log10(AP.MBC) ~ MAT*Depth + (1|Pit), data = data %>% filter(AP.MBC > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value))) # depth effect and interaction (at higher temperatures there is less of a neg. depth effect)
+a <- lmer(log10(AP.MBC) ~ MAP*Depth + (1|Pit), data = data %>% filter(AP.MBC > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value))) # nothing sig.
+a <- lmer(log10(AP.MBC) ~ MAP*Depth + Depth*MAT + (1|Pit), data = data %>% filter(AP.MBC > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value)))
+
+
+# BG
+
+a <- lmer(log10(BG.SOC) ~ Depth + (1|Pit), data = data %>% filter(BG.SOC > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value)))
+AIC(a)
+a <- lmer(log10(BG.SOC) ~ MAT*Depth + (1|Pit), data = data %>% filter(BG.SOC > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value))) # depth effect and interaction (at higher temperatures there is less of a neg. depth effect)
+a <- lmer(log10(BG.SOC) ~ MAP*Depth + (1|Pit), data = data %>% filter(BG.SOC > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value))) # nothing sig.
+a <- lmer(log10(BG.SOC) ~ MAP*Depth + Depth*MAT + (1|Pit), data = data %>% filter(BG.SOC > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value)))
+
+# NAG
+a <- lmer(log10(NAG.SOC) ~ Depth + (1|Pit), data = data %>% filter(NAG.SOC > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value)))
+AIC(a)
+a <- lmer(log10(NAG.SOC) ~ MAT*Depth + (1|Pit), data = data %>% filter(NAG.SOC > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value))) # depth effect and interaction (at higher temperatures there is less of a neg. depth effect)
+a <- lmer(log10(NAG.SOC) ~ MAP*Depth + (1|Pit), data = data %>% filter(NAG.SOC > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value))) # nothing sig.
+a <- lmer(log10(NAG.SOC) ~ MAP*Depth + Depth*MAT + (1|Pit), data = data %>% filter(NAG.SOC > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value)))
+
+# AP
+a <- lmer(log10(AP.SOC) ~ Depth + (1|Pit), data = data %>% filter(AP.SOC > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value)))
+AIC(a)
+a <- lmer(log10(AP.SOC) ~ MAT*Depth + (1|Pit), data = data %>% filter(AP.SOC > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value))) # depth effect and interaction (at higher temperatures there is less of a neg. depth effect)
+a <- lmer(log10(AP.SOC) ~ MAP*Depth + (1|Pit), data = data %>% filter(AP.SOC > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value))) # nothing sig.
+a <- lmer(log10(AP.SOC) ~ MAP*Depth + Depth*MAT + (1|Pit), data = data %>% filter(AP.SOC > 0), na.action = na.omit) 
+shapiro.test(resid(a))
+coefs <- data.frame(summary(a)$coefficient)
+coefs$p <- 2 * (1 - pnorm(abs(coefs$t.value)))
+
+# By horizon
+
+# BG
+a <- lmer(log10(BG.corr) ~ Horizon + (1|Pit), data = data %>% filter(BG.corr > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+a <- lmer(log10(BG.corr) ~ MAT*Horizon + (1|Pit), data = data %>% filter(BG.corr > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+a <- lmer(log10(BG.corr) ~ MAP*Horizon + (1|Pit), data = data %>% filter(BG.corr > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+a <- lmer(log10(BG.corr) ~ MAP*Horizon + Horizon*MAT + (1|Pit), data = data %>% filter(BG.corr > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+
+# NAG
+a <- lmer(log10(NAG.corr) ~ Horizon + (1|Pit), data = data %>% filter(NAG.corr > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+a <- lmer(log10(NAG.corr) ~ MAT*Horizon + (1|Pit), data = data %>% filter(NAG.corr > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+a <- lmer(log10(NAG.corr) ~ MAP*Horizon + (1|Pit), data = data %>% filter(NAG.corr > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+a <- lmer(log10(NAG.corr) ~ MAP*Horizon + Horizon*MAT + (1|Pit), data = data %>% filter(NAG.corr > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+
+# AP
+a <- lmer(log10(AP.corr) ~ Horizon + (1|Pit), data = data %>% filter(AP.corr > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+a <- lmer(log10(AP.corr) ~ MAT*Horizon + (1|Pit), data = data %>% filter(AP.corr > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+a <- lmer(log10(AP.corr) ~ MAP*Horizon + (1|Pit), data = data %>% filter(AP.corr > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+a <- lmer(log10(AP.corr) ~ MAP*Horizon + Horizon*MAT + (1|Pit), data = data %>% filter(AP.corr > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+
+
+# BG
+a <- lmer(log10(BG.MBC) ~ Horizon + (1|Pit), data = data %>% filter(BG.MBC > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+a <- lmer(log10(BG.MBC) ~ MAT*Horizon + (1|Pit), data = data %>% filter(BG.MBC > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+a <- lmer(log10(BG.MBC) ~ MAP*Horizon + (1|Pit), data = data %>% filter(BG.MBC > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+a <- lmer(log10(BG.MBC) ~ MAP*Horizon + Horizon*MAT + (1|Pit), data = data %>% filter(BG.MBC > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+
+# NAG
+a <- lmer(log10(NAG.MBC) ~ Horizon + (1|Pit), data = data %>% filter(NAG.MBC > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+a <- lmer(log10(NAG.MBC) ~ MAT*Horizon + (1|Pit), data = data %>% filter(NAG.MBC > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+a <- lmer(log10(NAG.MBC) ~ MAP*Horizon + (1|Pit), data = data %>% filter(NAG.MBC > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+a <- lmer(log10(NAG.MBC) ~ MAP*Horizon + Horizon*MAT + (1|Pit), data = data %>% filter(NAG.MBC > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+
+# AP
+a <- lmer(log10(AP.MBC) ~ Horizon + (1|Pit), data = data %>% filter(AP.MBC > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+a <- lmer(log10(AP.MBC) ~ MAT*Horizon + (1|Pit), data = data %>% filter(AP.MBC > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+a <- lmer(log10(AP.MBC) ~ MAP*Horizon + (1|Pit), data = data %>% filter(AP.MBC > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+a <- lmer(log10(AP.MBC) ~ MAP*Horizon + Horizon*MAT + (1|Pit), data = data %>% filter(AP.MBC > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+
+# BG
+a <- lmer(log10(BG.SOC) ~ Horizon + (1|Pit), data = data %>% filter(BG.SOC > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+a <- lmer(log10(BG.SOC) ~ MAT*Horizon + (1|Pit), data = data %>% filter(BG.SOC > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+a <- lmer(log10(BG.SOC) ~ MAP*Horizon + (1|Pit), data = data %>% filter(BG.SOC > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+a <- lmer(log10(BG.SOC) ~ MAP*Horizon + Horizon*MAT + (1|Pit), data = data %>% filter(BG.SOC > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+
+# NAG
+a <- lmer(log10(NAG.SOC) ~ Horizon + (1|Pit), data = data %>% filter(NAG.SOC > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+a <- lmer(log10(NAG.SOC) ~ MAT*Horizon + (1|Pit), data = data %>% filter(NAG.SOC > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+a <- lmer(log10(NAG.SOC) ~ MAP*Horizon + (1|Pit), data = data %>% filter(NAG.SOC > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+a <- lmer(log10(NAG.SOC) ~ MAP*Horizon + Horizon*MAT + (1|Pit), data = data %>% filter(NAG.SOC > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+
+# AP
+a <- lmer(log10(AP.SOC) ~ Horizon + (1|Pit), data = data %>% filter(AP.SOC > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+a <- lmer(log10(AP.SOC) ~ MAT*Horizon + (1|Pit), data = data %>% filter(AP.SOC > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+a <- lmer(log10(AP.SOC) ~ MAP*Horizon + (1|Pit), data = data %>% filter(AP.SOC > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+a <- lmer(log10(AP.SOC) ~ MAP*Horizon + Horizon*MAT + (1|Pit), data = data %>% filter(AP.SOC > 0), na.action = na.omit) 
+Anova(a)
+AIC(a)
+```
+
