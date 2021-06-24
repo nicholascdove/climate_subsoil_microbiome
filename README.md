@@ -1,5 +1,4 @@
-# climate_subsoil_microbiome
-Code for "Depth dependence of climatic controls on soil microbial community activity and composition".
+# Code and data from "Depth dependence of climatic controls on soil microbial community activity and composition".
 
 Nicholas C. Dove<sup>1,2</sup>, Morgan E. Barnes<sup>2</sup>, Kimber C. Moreland<sup>2</sup>, Rober C. Graham<sup>3</sup>, Asmeret Asefaw Berhe<sup>2,4</sup>, Stephen C. Hart<sup>2,4,5</sup>
 
