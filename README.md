@@ -10,7 +10,7 @@ Nicholas C. Dove<sup>1,2</sup>, Morgan E. Barnes<sup>2</sup>, Kimber C. Moreland
 
 In Review.
 
-- Raw data can be found in the Sequence Read Archive under project ID <a href="http://www.ncbi.nlm.nih.gov/bioproject/685817">685817</a>.
+- Raw data can be found in the Sequence Read Archive under project ID <a href="https://www.ncbi.nlm.nih.gov/bioproject/PRJNA743681">743681</a>.
 
 - Or use my pre-made feature, taxonomy, and metadata tables found in this repository
 
