@@ -15,4 +15,4 @@ In Review.
 
 - Or use my pre-made feature, taxonomy, and metadata tables found in this repository
 
-- Please contact Nicholas Dove (dovenc@ornl.gov) with any questions or comments. I'm always happy to help :).
+- Please contact Nicholas Dove (ndove7@gmail.com) with any questions or comments. I'm always happy to help :).
